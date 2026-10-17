@@ -1,0 +1,77 @@
+# CUT3R-rel pilot, arm A (control): CUT3R's own frame-0 objective, fine-tuned
+# from the released checkpoint on the pilot data. Arm B (pilot_rel.yaml)
+# inherits everything here and changes only the criterion and the run name.
+# Stage-4 recipe: frozen encoder, 32-view clips, TBPTT with 4-frame chunks.
+model: ARCroco3DStereo(ARCroco3DStereoConfig(freeze='encoder', state_size=768, state_pe='2d',
+  pos_embed='RoPE100', rgb_head=True, pose_head=True, patch_embed_cls='ManyAR_PatchEmbed',
+  img_size=(512, 512), head_type='dpt', output_mode='pts3d+pose', depth_mode=('exp',
+  -inf, inf), conf_mode=('exp', 1, inf), pose_mode=('exp', -inf, inf), enc_embed_dim=1024,
+  enc_depth=24, enc_num_heads=16, dec_embed_dim=768, dec_depth=12, dec_num_heads=12,
+  landscape_only=False))
+pretrained: /group/compact-3dmem/checkpoints/CUT3R/cut3r_512_dpt_4_64.pth
+load_only_encoder: False
+long_context: True
+fixed_length: True
+resume: null
+benchmark: True
+num_views: 32
+num_test_views: 4
+n_corres_train: 0
+n_corres_test: 0
+
+train_criterion: ConfLoss(Regr3DPose(L21, norm_mode='?avg_dis'), alpha=0.2) + RGBLoss(MSE)
+test_criterion: Regr3DPose(L21, norm_mode='?avg_dis', gt_scale=True, sky_loss_value=0)
+
+# Ordered video only and no raymap queries, in both arms (see base dataset).
+# /data, or a node-local staged copy (cluster job sets DATA_ROOT).
+data_root: ${oc.env:DATA_ROOT,/data}
+pilot_res: "[(512, 384), (512, 336), (512, 288), (512, 256), (512, 208), (512, 144), (384, 512), (336, 512), (288, 512), (256, 512)]"
+dataset1: VideoRGBD_Multi(split='train', ROOT='${data_root}/arkitscenes-cut3r-video', name='arkitscenes_video',
+  max_interval=4, video_only=True, no_raymap=True, aug_crop=16, resolution=${pilot_res},
+  transform=SeqColorJitter, num_views=${num_views}, n_corres=${n_corres_train})
+dataset2: TartanAirRaw_Multi(ROOT='${data_root}/tartanair-v1', video_only=True, no_raymap=True,
+  aug_crop=16, resolution=${pilot_res}, transform=SeqColorJitter, num_views=${num_views},
+  n_corres=${n_corres_train})
+train_dataset: 2000 @ ${dataset1} + 2000 @ ${dataset2}
+# eval_freq is 0 -- checkpoints are scored by the frame-anchor suite -- but the
+# trainer still builds a test loader, so it gets a small valid one.
+test_dataset: 16 @ VideoRGBD_Multi(split='train', ROOT='${data_root}/arkitscenes-cut3r-video', name='arkitscenes_video',
+  max_interval=4, video_only=True, no_raymap=True, resolution=(512, 384), num_views=${num_test_views},
+  seed=42, n_corres=${n_corres_test})
+
+seed: 0
+batch_size: 4
+accum_iter: 1
+gradient_checkpointing: true
+epochs: 10
+start_epoch: 0
+weight_decay: 0.05
+lr: 1.0e-05
+min_lr: 1.0e-06
+warmup_epochs: 0.5
+amp: 1
+num_workers: 8
+world_size: 1
+local-rank: -1
+dist_url: 'env://'
+rank: 0
+gpu: 0
+distributed: False
+dist_backend: 'nccl'
+
+eval_freq: 0
+save_freq: 1
+keep_freq: 5
+print_freq: 10
+print_img_freq: 1000000
+num_imgs_vis: 4
+save_dir: /scratch/${oc.env:USER}/cut3r_rel_runs
+exp_name: pilot_frame0
+task: 'cut3r'
+logdir: ${save_dir}/${exp_name}/logs
+output_dir: ${save_dir}/${exp_name}/
+wandb_project: cut3r-rel
+hydra:
+  verbose: True
+  run:
+    dir: ${save_dir}/${exp_name}

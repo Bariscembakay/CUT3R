@@ -157,7 +157,14 @@ def loss_of_one_batch_tbptt(
                         chunk.append(batch[i])
                 with torch.cuda.amp.autocast(enabled=False):
                     loss, loss_details = (
-                        criterion(chunk, preds, camera1=batch[0]["camera_pose"])
+                        criterion(
+                            chunk,
+                            preds,
+                            camera1=batch[0]["camera_pose"],
+                            views_all=batch,
+                            chunk_start=chunk_id * chunk_size,
+                            preds_all=all_preds,
+                        )
                         if criterion is not None
                         else None
                     )
@@ -190,7 +197,14 @@ def loss_of_one_batch_tbptt(
                     chunk.append(batch[i])
                 with torch.cuda.amp.autocast(enabled=False):
                     loss, loss_details = (
-                        criterion(chunk, preds, camera1=batch[0]["camera_pose"])
+                        criterion(
+                            chunk,
+                            preds,
+                            camera1=batch[0]["camera_pose"],
+                            views_all=batch,
+                            chunk_start=chunk_id * chunk_size,
+                            preds_all=all_preds,
+                        )
                         if criterion is not None
                         else None
                     )

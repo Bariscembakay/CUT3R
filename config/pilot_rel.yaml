@@ -1,0 +1,10 @@
+# CUT3R-rel pilot, arm B: identical to arm A (pilot_frame0.yaml) except the
+# objective -- pose and cross pointmap relative to the previous view, local-scale
+# normalisation, composed-pose terms over the last 4 views (Regr3DPoseRel).
+defaults:
+  - pilot_frame0
+  - _self_
+
+train_criterion: ConfLoss(Regr3DPoseRel(L21, norm_mode='?avg_dis', window=4), alpha=0.2) + RGBLoss(MSE)
+test_criterion: Regr3DPoseRel(L21, norm_mode='?avg_dis', gt_scale=True, sky_loss_value=0, window=4)
+exp_name: pilot_rel

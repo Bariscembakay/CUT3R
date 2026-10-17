@@ -14,13 +14,12 @@ from dust3r.utils.geometry import (
     get_group_pointcloud_center_scale,
     weighted_procrustes,
 )
-from gsplat import rasterization
 import numpy as np
-import lpips
 from dust3r.utils.camera import (
     pose_encoding_to_camera,
     camera_to_pose_encoding,
     relative_pose_absT_quatR,
+    matrix_to_quaternion,
 )
 
 
@@ -383,6 +382,7 @@ class Regr3DPose(Criterion, MultiLoss):
         norm_pose_separately=False,
         eps=1e-3,
         camera1=None,
+        **kw,
     ):
         # everything is normalized w.r.t. camera of view1
         in_camera1 = inv(gts[0]["camera_pose"]) if camera1 is None else inv(camera1)
@@ -1042,6 +1042,101 @@ class Regr3DPoseBatchList(Regr3DPose):
         details["pose_loss"] = self.compute_pose_loss(gt_poses, pr_poses, pose_masks)
 
         return Sum(*list(zip(ls, masks))), (details | monitoring)
+
+
+class Regr3DPoseRel(Regr3DPose):
+    """CUT3R-rel: targets relative to the previous view instead of view 0.
+
+    - pose head: camera t -> camera t-1;  cross pointmap: view t in camera t-1.
+    - The first view of a clip, and a view right after a reset, keep CUT3R's
+      frame-0 convention (identity pose, cross pointmap in its own camera).
+    - Loss scale comes from camera-frame points only (`norm_self_only`), so
+      precision is measured against local depth, not distance from view 0.
+    - Adds composed-pose terms: P_{t-k+1} ... P_t against GT T_{t-k <- t} for
+      k = 2..window. Steps from earlier TBPTT chunks enter as detached constants.
+
+    Needs the whole clip as context: `views_all`, `chunk_start` (index of
+    gts[0] in the clip) and `preds_all` (detached predictions of the clip so far).
+    """
+
+    def __init__(self, criterion, window=4, composed_weight=1.0, **kw):
+        super().__init__(criterion, **kw)
+        self.window = window
+        self.composed_weight = composed_weight
+
+    @staticmethod
+    def _prev_pose(views, g):
+        """c2w of the view each view g is relative to (itself at a clip start or after a reset)."""
+        cur = views[g]["camera_pose"]
+        if g == 0:
+            return cur
+        restart = views[g - 1]["reset"].bool()[:, None, None]
+        return torch.where(restart, cur, views[g - 1]["camera_pose"])
+
+    def get_all_pts3d(self, gts, preds, views_all=None, chunk_start=0, preds_all=None, eps=1e-3, **kw):
+        views = views_all if views_all is not None else gts
+        assert all(bool(v["is_metric"].all()) for v in gts), "Regr3DPoseRel: metric datasets only"
+        assert not any(bool(v["camera_only"].any()) for v in gts), "Regr3DPoseRel: no camera-only datasets"
+        prev = [self._prev_pose(views, chunk_start + j) for j in range(len(gts))]
+        gt_pts_self = [geotrf(inv(gt["camera_pose"]), gt["pts3d"]) for gt in gts]
+        gt_pts_cross = [geotrf(inv(p), gt["pts3d"]) for p, gt in zip(prev, gts)]
+        valids = [gt["valid_mask"].clone() for gt in gts]
+        pr_pts_self = [pred["pts3d_in_self_view"] for pred in preds]
+        pr_pts_cross = [pred["pts3d_in_other_view"] for pred in preds]
+        conf_self = [torch.log(pred["conf_self"]).detach().clip(eps) for pred in preds]
+        conf_cross = [torch.log(pred["conf"]).detach().clip(eps) for pred in preds]
+
+        norm_factor = self.get_norm_factor_point_cloud(
+            gt_pts_self, gt_pts_cross, valids, conf_self, conf_cross, norm_self_only=True
+        ).clip(eps)
+        gt_pts_self = [pts / norm_factor for pts in gt_pts_self]
+        gt_pts_cross = [pts / norm_factor for pts in gt_pts_cross]
+        pr_pts_self = [pts / norm_factor for pts in pr_pts_self]
+        pr_pts_cross = [pts / norm_factor for pts in pr_pts_cross]
+
+        nf = norm_factor.squeeze(2, 3)
+        gt_poses = [camera_to_pose_encoding(inv(p) @ gt["camera_pose"]) for p, gt in zip(prev, gts)]
+        gt_poses = [(g[:, :3] / nf, g[:, 3:]) for g in gt_poses]
+        pr_poses = [(pr["camera_pose"][:, :3] / nf, pr["camera_pose"][:, 3:]) for pr in preds]
+        pose_masks = nf.squeeze(-1) > eps
+
+        composed = self._composed_pose_loss(views, gts, preds, preds_all, chunk_start, nf, pose_masks)
+        skys = [gt["sky_mask"] & ~valid for gt, valid in zip(gts, valids)]
+        return (gt_pts_self, gt_pts_cross, pr_pts_self, pr_pts_cross, gt_poses, pr_poses,
+                valids, skys, pose_masks, {"composed_pose_loss": composed})
+
+    def _composed_pose_loss(self, views, gts, preds, preds_all, chunk_start, nf, pose_masks):
+        def step(m):  # predicted camera m -> camera m-1, 4x4, grad only inside this chunk
+            src = preds[m - chunk_start] if m >= chunk_start else preds_all[m]
+            return pose_encoding_to_camera(src["camera_pose"])
+
+        terms = []
+        for j in range(len(gts)):
+            g = chunk_start + j
+            C = step(g)
+            ok = pose_masks.clone()
+            for k in range(2, self.window + 1):
+                if g - k < 0:
+                    break
+                C = step(g - k + 1) @ C
+                # no composition across a reset: the steps would be in different frames
+                ok = ok & ~views[g - k + 1]["reset"].bool() & ~views[g - k]["reset"].bool()
+                T = inv(views[g - k]["camera_pose"]) @ views[g]["camera_pose"]
+                t_err = torch.norm((C[:, :3, 3] - T[:, :3, 3]) / nf, dim=-1)
+                q_pr, q_gt = matrix_to_quaternion(C[:, :3, :3]), matrix_to_quaternion(T[:, :3, :3])
+                q_err = torch.minimum(torch.norm(q_pr - q_gt, dim=-1), torch.norm(q_pr + q_gt, dim=-1))
+                if ok.any():
+                    terms.append((t_err + q_err)[ok].mean())
+        if not terms:
+            return torch.zeros((), device=nf.device)
+        return torch.stack(terms).mean()
+
+    def compute_loss(self, gts, preds, **kw):
+        loss, details = super().compute_loss(gts, preds, **kw)
+        composed = details.pop("composed_pose_loss")
+        details["pose_loss"] = details["pose_loss"] + self.composed_weight * composed
+        details["composed_pose_loss"] = float(composed)
+        return loss, details
 
 
 class ConfLoss(MultiLoss):

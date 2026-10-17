@@ -1,5 +1,8 @@
 import torch
-from gsplat import rasterization
+try:
+    from gsplat import rasterization
+except ImportError:  # only needed for image logging (print_img_freq)
+    rasterization = None
 from dust3r.utils.geometry import inv, geotrf
 
 

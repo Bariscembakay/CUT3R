@@ -48,6 +48,8 @@ class BaseMultiViewDataset(EasyDataset):
         seed=None,
         allow_repeat=False,
         seq_aug_crop=False,
+        video_only=False,
+        no_raymap=False,
     ):
         assert num_views is not None, "undefined num_views"
         self.num_views = num_views
@@ -79,6 +81,10 @@ class BaseMultiViewDataset(EasyDataset):
         self.seed = seed
         self.allow_repeat = allow_repeat
         self.seq_aug_crop = seq_aug_crop
+        # Opt-in, default off: ordered clips only, and no raymap queries (a
+        # raymap encodes the camera in frame-0 coordinates).
+        self.video_only = video_only
+        self.no_raymap = no_raymap
 
     def __len__(self):
         return len(self.scenes)
@@ -198,6 +204,8 @@ class BaseMultiViewDataset(EasyDataset):
             pos: list of positions of the views in ids_all, i.e., index for ids_all
             is_video: True if the views are consecutive
         """
+        if self.video_only:
+            video_prob = 1.0
         assert min_interval > 0, f"min_interval should be > 0, got {min_interval}"
         assert (
             min_interval <= max_interval
@@ -290,7 +298,7 @@ class BaseMultiViewDataset(EasyDataset):
 
     def get_img_and_ray_masks(self, is_metric, v, rng, p=[0.8, 0.15, 0.05]):
         # generate img mask and raymap mask
-        if v == 0 or (not is_metric):
+        if v == 0 or (not is_metric) or self.no_raymap:
             img_mask = True
             raymap_mask = False
         else:

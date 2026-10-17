@@ -21,6 +21,8 @@ from .omniobject3d import OmniObject3D_Multi
 from .pointodyssey import PointOdyssey_Multi
 from .realestate10k import RE10K_Multi
 from .scannet import ScanNet_Multi
+from .video_rgbd import VideoRGBD_Multi
+from .tartanair_raw import TartanAirRaw_Multi
 from .scannetpp import ScanNetpp_Multi  # noqa
 from .smartportraits import SmartPortraits_Multi
 from .spring import Spring
