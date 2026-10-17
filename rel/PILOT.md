@@ -96,3 +96,35 @@ sequences improve; 01 and 07 get worse).
 - Leave-one-out debiasing is an estimate of what removing the bias could give,
   not a trained result.
 - Training data is synthetic TartanAir plus indoor ARKitScenes; no driving data.
+
+## Rotation bias: where it comes from (2026-10-17)
+
+Signed per-frame rotation error of CUT3R-rel, median, deg/frame (yaw + = right):
+
+| | yaw | pitch | roll |
+|---|---|---|---|
+| KITTI, all frames | -0.169 | -0.051 | +0.139 |
+| KITTI, standing still (< 5 cm/frame) | -0.084 | -0.197 | +0.105 |
+| KITTI, first 10 frames of the stream | -0.180 | -0.102 | +0.127 |
+| KITTI, GT turning left / straight / right | -0.022 / -0.173 / -0.268 | | +0.05 / +0.15 / +0.18 |
+| NRGBD, all frames | -0.006 (5/9 scenes negative) | -0.025 | +0.135 (9/9 positive) |
+
+Released CUT3R has no consistent sign in any of these bins. Training data has no
+matching net rotation (TartanAir mean yaw/roll +0.014 / 0.000 deg/step; ARKitScenes,
+every 5th scene, +0.14 / +0.06).
+
+- **Roll +0.14 deg/frame is universal** (every KITTI and NRGBD sequence), present
+  at zero motion and from the first frame: a constant offset of the relative
+  pose head. The quaternion loss near identity is too weak to remove it.
+- **Yaw -0.17 deg/frame is driving-specific** (absent indoors): it grows with
+  speed and under-rotates right turns (pred yaw ~ 0.9 x GT - 0.17). Candidate
+  causes, not yet separated: no driving data in training; KITTI's 512x144
+  aspect; a misjudged principal point making forward motion read as yaw.
+
+Smoothness: per-frame rotation noise is 3x lower than released on KITTI (yaw
+0.22 vs 0.65 deg) and lower on NRGBD (0.11 vs 0.18); per-step translation
+error 7x lower (RPE@10 1.23 vs 9.50 m). Chaining turns per-step error into slow
+drift instead of frame-to-frame jitter.
+
+Per-sequence plots: `rel/figures/kitti_xy/`, `rel/figures/nrgbd_topdown/`
+(PNG + CSV, unaligned, frame-0 coordinates).
