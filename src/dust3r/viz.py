@@ -841,7 +841,10 @@ def drawMatches_lines(
 import torch
 import os
 import time
-import viser
+try:
+    import viser
+except ImportError:  # only the interactive viewer below needs it
+    viser = None
 
 
 def rotation_matrix_to_quaternion(R):
