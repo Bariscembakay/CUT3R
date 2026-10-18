@@ -17,6 +17,10 @@ sys.path.insert(0, osp.dirname(osp.abspath(__file__)))
 from analyze_chunked import kitti_odometry_error, load_run  # noqa: E402
 
 PE = "/group/compact-3dmem/campaigns/cut3r_rel/pilot_eval"
+SE = "/group/compact-3dmem/campaigns/cut3r_rel/scale_eval"
+MODELS = {"pilot_rel": f"{PE}/pilot_rel_continuous", "pilot_rel_v2loss": f"{PE}/pilot_rel_v2loss_continuous",
+          "scale_frame0": f"{SE}/scale_frame0_continuous", "scale_rel_ep5": f"{SE}/scale_rel_ep5_continuous",
+          "scale_rel": f"{SE}/scale_rel_continuous"}
 SEQS = ["03", "04", "06", "07", "10"]
 
 
@@ -28,11 +32,13 @@ def rates(P):
 def main():
     print("| model | preprocessing | bias yaw | bias pitch | bias roll | noise yaw | noise roll | t_err % |")
     print("|---|---|---|---|---|---|---|---|")
-    for model in ("pilot_rel", "pilot_rel_v2loss"):
+    for model, base in MODELS.items():
         for cond, suffix in (("default", ""), ("mirrored", "_hflip"), ("principal-point crop", "_centerpp")):
+            if not osp.isdir(f"{base}{suffix}"):
+                continue  # condition never run for this model
             E, T = [], []
             for s in SEQS:
-                d = f"{PE}/{model}_continuous{suffix}/kitti/{s}"
+                d = f"{base}{suffix}/kitti/{s}"
                 if not osp.exists(f"{d}/frames.npz"):
                     break
                 _, P, G, _, _ = load_run(d)
