@@ -1,0 +1,27 @@
+# Scale-up, frame-0 control: pilot_frame0's recipe on the full data mix. The
+# CUT3R-rel arm (scale_rel.yaml) inherits everything here except the criterion.
+# Data roots are registry mounts in the training zone (msp3: all five local or pulled).
+defaults:
+  - pilot_frame0
+  - _self_
+
+static_prob: 0.0
+dataset1: VideoRGBD_Multi(split='train', ROOT='${data_root}/arkitscenes-cut3r-video-full', name='arkitscenes_video',
+  max_interval=4, video_only=True, no_raymap=True, static_prob=${static_prob}, aug_crop=16, resolution=${pilot_res},
+  transform=SeqColorJitter, num_views=${num_views}, n_corres=${n_corres_train})
+dataset2: TartanAirRaw_Multi(ROOT='${data_root}/tartanair-v1', video_only=True, no_raymap=True, static_prob=${static_prob},
+  aug_crop=16, resolution=${pilot_res}, transform=SeqColorJitter, num_views=${num_views}, n_corres=${n_corres_train})
+dataset3: TartanAirV2Raw_Multi(ROOT='${data_root}/tartanair-v2', video_only=True, no_raymap=True, static_prob=${static_prob},
+  aug_crop=16, resolution=${pilot_res}, transform=SeqColorJitter, num_views=${num_views}, n_corres=${n_corres_train})
+dataset4: ScanNetExtracted_Multi(split='train', ROOT='${data_root}/scannet-v2-extracted', max_interval=30, video_only=True,
+  no_raymap=True, static_prob=${static_prob}, aug_crop=16, resolution=${pilot_res}, transform=SeqColorJitter,
+  num_views=${num_views}, n_corres=${n_corres_train})
+dataset5: VideoRGBD_Multi(split='train', ROOT='${data_root}/nuscenes-cut3r-video', name='nuscenes_front',
+  max_interval=12, video_only=True, no_raymap=True, static_prob=${static_prob}, aug_crop=16, resolution=${pilot_res},
+  transform=SeqColorJitter, num_views=${num_views}, n_corres=${n_corres_train})
+train_dataset: 2000 @ ${dataset1} + 2000 @ ${dataset2} + 2000 @ ${dataset3} + 2000 @ ${dataset4} + 2000 @ ${dataset5}
+test_dataset: 16 @ VideoRGBD_Multi(split='train', ROOT='${data_root}/nuscenes-cut3r-video', name='nuscenes_front',
+  max_interval=12, video_only=True, no_raymap=True, resolution=(512, 288), num_views=${num_test_views},
+  seed=42, n_corres=${n_corres_test})
+epochs: 10
+exp_name: scale_frame0

@@ -25,11 +25,14 @@ RUNS = {
     "released": f"{FA}/cut3r_pub_palindrome_s1",
     "A (frame-0 ft)": f"{PE}/pilot_frame0_continuous",
     "CUT3R-rel": f"{PE}/pilot_rel_continuous",
+    "v2 loss": f"{PE}/pilot_rel_v2loss_continuous",
+    "v2 loss + static": f"{PE}/pilot_rel_v2_continuous",
     "released, reset/50": f"{FA}/cut3r_pub_chunk50_ov1_s1",
     "A, reset/50": f"{PE}/pilot_frame0_chunk50_ov1",
     "CUT3R-rel, reset/50": f"{PE}/pilot_rel_chunk50_ov1",
 }
-COLORS = {"released": "#2a78d6", "A (frame-0 ft)": "#eb6834", "CUT3R-rel": "#1baf7a"}
+COLORS = {"released": "#2a78d6", "A (frame-0 ft)": "#eb6834", "CUT3R-rel": "#1baf7a",
+          "v2 loss": "#eda100", "v2 loss + static": "#e87ba4"}
 POS_BINS = [0, 50, 100, 200, 400, 800, 1600, 1e9]
 GEOM = ("world_shape_med", "self_shape_med", "ws_ratio", "self_absrel")
 
@@ -92,7 +95,7 @@ def main():
             md.append("\nKITTI t_err (%) per sequence\n\n| seq | " + " | ".join(pose) + " |\n|" + "---|" * (len(pose) + 1))
             for s in scenes:
                 md.append(f"| {s} | " + " | ".join(fmt(pose[r][s]["t_err"]) for r in pose) + " |")
-            cont = [r for r in ("released", "A (frame-0 ft)", "CUT3R-rel") if r in pose]
+            cont = [r for r in ("released", "A (frame-0 ft)", "CUT3R-rel", "v2 loss", "v2 loss + static") if r in pose]
             md.append("\nContinuous streams by stream position: forward speed ratio / local heading drift "
                       "(deg per 10 frames)\n\n| position | " + " | ".join(cont) + " |\n|" + "---|" * (len(cont) + 1))
             dec = {}

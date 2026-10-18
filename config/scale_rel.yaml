@@ -1,0 +1,11 @@
+# Scale-up, CUT3R-rel arm: scale_frame0.yaml's data and schedule with the v2
+# relative criterion (rel_criterion; pick the step-1 winner at launch, e.g.
+# static_prob=0.1 for the "v2 loss + static" recipe).
+defaults:
+  - scale_frame0
+  - _self_
+
+rel_criterion: Regr3DPoseRel(L21, norm_mode='?avg_dis', window=16, rot_loss='angle', rot_weight=10.0, composed_pts_ks=(2, 4, 8, 16))
+train_criterion: ConfLoss(${rel_criterion}, alpha=0.2) + RGBLoss(MSE)
+test_criterion: Regr3DPoseRel(L21, norm_mode='?avg_dis', gt_scale=True, sky_loss_value=0, window=16, rot_loss='angle', rot_weight=10.0, composed_pts_ks=(2, 4, 8, 16))
+exp_name: scale_rel
