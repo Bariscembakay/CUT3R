@@ -33,7 +33,8 @@ sys.path[:0] = [REPO, osp.join(REPO, "src")]
 
 from dust3r.model import ARCroco3DStereo  # noqa: E402
 from dust3r.utils.camera import pose_encoding_to_camera  # noqa: E402
-from dust3r.utils.image import load_images  # noqa: E402
+from dust3r.utils.image import ImgNorm, _resize_pil_image, load_images  # noqa: E402
+import PIL.Image  # noqa: E402
 
 CKPT = "/group/compact-3dmem/checkpoints/CUT3R/cut3r_512_dpt_4_64.pth"
 NRGBD_K = np.array([[554.2562584220408, 0, 320], [0, 554.2562584220408, 240], [0, 0, 1]])
@@ -131,15 +132,26 @@ def transform_K(K, W1, H1, new, box):
     return K2
 
 
+MIRROR = np.diag([-1.0, 1.0, 1.0, 1.0])
+
+
 class StreamDataset(torch.utils.data.Dataset):
-    def __init__(self, frames, order):
+    """hflip: mirror images (and depth, K, GT poses) left-right. center_pp: crop
+    the source image around its principal point before resizing, as CUT3R's
+    training crop does, instead of load_images' plain centre crop."""
+
+    def __init__(self, frames, order, hflip=False, center_pp=False):
         self.frames = frames
         self.order = order
+        self.hflip = hflip
+        self.center_pp = center_pp
 
     def __len__(self):
         return len(self.order)
 
     def __getitem__(self, pos):
+        if self.hflip or self.center_pp:
+            return self._get_modified(pos)
         f = self.frames[self.order[pos]]
         im = load_images([f["img"]], size=512, verbose=False)[0]
         H1, W1 = cv2.imread(f["img"]).shape[:2]
@@ -157,6 +169,41 @@ class StreamDataset(torch.utils.data.Dataset):
             out["depth"] = torch.zeros(Hc, Wc)
         out["has_depth"] = f["depth"] is not None
         c2w = f["c2w"]
+        out["c2w_gt"] = torch.from_numpy(c2w if c2w is not None else np.full((4, 4), np.nan))
+        return out
+
+
+    def _get_modified(self, pos):
+        f = self.frames[self.order[pos]]
+        img = PIL.Image.open(f["img"]).convert("RGB")
+        K = f["K"].astype(np.float64).copy()
+        W1, H1 = img.size
+        d = read_depth(f["depth"], f["depth_kind"]) if f["depth"] is not None else None
+        c2w = f["c2w"]
+        if self.hflip:
+            img = img.transpose(PIL.Image.FLIP_LEFT_RIGHT)
+            K[0, 2] = (W1 - 1) - K[0, 2]
+            d = None if d is None else d[:, ::-1].copy()
+            c2w = None if c2w is None else MIRROR @ c2w @ MIRROR
+        if self.center_pp:
+            cx, cy = np.round(K[:2, 2]).astype(int)
+            mx, my = min(cx, W1 - cx), min(cy, H1 - cy)
+            b0 = (cx - mx, cy - my, cx + mx, cy + my)
+            img = img.crop(b0)
+            K[0, 2] -= b0[0]
+            K[1, 2] -= b0[1]
+            d = None if d is None else d[b0[1]:b0[3], b0[0]:b0[2]].copy()
+            W1, H1 = img.size
+        new, box = crop_geometry(W1, H1)
+        img = _resize_pil_image(img, 512).crop(box)
+        out = dict(pos=pos, fid=f["fid"], img=ImgNorm(img), true_shape=torch.tensor([img.size[1], img.size[0]]),
+                   K=torch.from_numpy(transform_K(K, W1, H1, new, box)))
+        if d is not None:
+            d = cv2.resize(d, new, interpolation=cv2.INTER_NEAREST)
+            out["depth"] = torch.from_numpy(d[box[1]:box[3], box[0]:box[2]].copy())
+        else:
+            out["depth"] = torch.zeros(box[3] - box[1], box[2] - box[0])
+        out["has_depth"] = d is not None
         out["c2w_gt"] = torch.from_numpy(c2w if c2w is not None else np.full((4, 4), np.nan))
         return out
 
@@ -279,6 +326,8 @@ def main():
     ap.add_argument("--dump-stride", type=int, default=8, help="pixel stride of the point dump; 0 disables")
     ap.add_argument("--workers", type=int, default=8)
     ap.add_argument("--ckpt", default=CKPT)
+    ap.add_argument("--hflip", type=int, default=0, help="mirror the video left-right (GT mirrored too)")
+    ap.add_argument("--center-pp", type=int, default=0, help="crop around the principal point, like training")
     ap.add_argument("--relative", type=int, default=0,
                     help="CUT3R-rel checkpoint: the pose head predicts camera t -> camera t-1; "
                          "c2w_pred is then the chained pose and pose_head the raw output")
@@ -316,7 +365,7 @@ def main():
 
     device = "cuda"
     model = ARCroco3DStereo.from_pretrained(args.ckpt).to(device).eval()
-    loader = torch.utils.data.DataLoader(StreamDataset(frames, order), batch_size=1,
+    loader = torch.utils.data.DataLoader(StreamDataset(frames, order, bool(args.hflip), bool(args.center_pp)), batch_size=1,
                                          num_workers=args.workers, pin_memory=True)
     os.makedirs(args.out, exist_ok=True)
 
@@ -374,7 +423,8 @@ def main():
                    chunk=args.chunk if args.order == "chunked" else None,
                    overlap=args.overlap if args.order == "chunked" else None,
                    resets=resets,
-                   ckpt=args.ckpt, relative=bool(args.relative), git=git_rev(), tf32=bool(args.tf32), gpu=torch.cuda.get_device_name(),
+                   ckpt=args.ckpt, relative=bool(args.relative), hflip=bool(args.hflip),
+                   center_pp=bool(args.center_pp), git=git_rev(), tf32=bool(args.tf32), gpu=torch.cuda.get_device_name(),
                    torch=torch.__version__, seconds=elapsed, fps=len(order) / elapsed,
                    hostname=os.uname().nodename, slurm_job=os.environ.get("SLURM_JOB_ID")),
               open(f"{args.out}/meta.json", "w"), indent=2)
