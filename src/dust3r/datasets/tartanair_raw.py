@@ -1,6 +1,7 @@
 import os
 import os.path as osp
 
+import cv2
 import numpy as np
 from scipy.spatial.transform import Rotation
 
@@ -25,23 +26,32 @@ class TartanAirRaw_Multi(TartanAir_Multi):
     depth_left, pose_left.txt}) instead of preprocess_tartanair.py's per-frame
     copies: same views, same pose convention, same sky/depth handling."""
 
+    MODES = ("Easy", "Hard")
+    IMG = ("image_left", "_left.png")
+    DEPTH = ("depth_left", "_left_depth.npy")
+    POSE_FILE = "pose_left.txt"
+    K = TARTANAIR_K
+
+    def read_depth(self, path):
+        return np.load(path)
+
     def _load_data(self):
         offset, j = 0, 0
         scenes, sceneids, images, scene_img_list, start_img_ids = [], [], [], [], []
         self.scene_poses = []
         cut_off = self.num_views if not self.allow_repeat else max(self.num_views // 3, 3)
         for env in sorted(d for d in os.listdir(self.ROOT) if osp.isdir(osp.join(self.ROOT, d))):
-            for mode in ["Easy", "Hard"]:
+            for mode in self.MODES:
                 mode_dir = osp.join(self.ROOT, env, mode)
                 if not osp.isdir(mode_dir):
                     continue
                 for seq in sorted(os.listdir(mode_dir)):
                     seq_dir = osp.join(mode_dir, seq)
-                    if not osp.exists(osp.join(seq_dir, "pose_left.txt")):
+                    if not osp.exists(osp.join(seq_dir, self.POSE_FILE)):
                         continue
-                    poses = ned_poses_to_opencv_c2w(np.loadtxt(osp.join(seq_dir, "pose_left.txt")))
-                    basenames = sorted(f[:6] for f in os.listdir(osp.join(seq_dir, "image_left"))
-                                       if f.endswith("_left.png"))
+                    poses = ned_poses_to_opencv_c2w(np.loadtxt(osp.join(seq_dir, self.POSE_FILE)))
+                    basenames = sorted(f[:6] for f in os.listdir(osp.join(seq_dir, self.IMG[0]))
+                                       if f.endswith(self.IMG[1]))
                     assert len(basenames) == len(poses), seq_dir
                     if len(basenames) < cut_off:
                         continue
@@ -69,8 +79,8 @@ class TartanAirRaw_Multi(TartanAir_Multi):
             scene_id = self.sceneids[view_idx]
             scene_dir = self.scenes[scene_id]
             basename = self.images[view_idx]
-            image = imread_cv2(osp.join(scene_dir, "image_left", basename + "_left.png"))
-            depthmap = np.load(osp.join(scene_dir, "depth_left", basename + "_left_depth.npy"))
+            image = imread_cv2(osp.join(scene_dir, self.IMG[0], basename + self.IMG[1]))
+            depthmap = self.read_depth(osp.join(scene_dir, self.DEPTH[0], basename + self.DEPTH[1]))
             camera_pose = self.scene_poses[scene_id][int(basename)]
 
             sky_mask = depthmap >= 1000
@@ -80,7 +90,7 @@ class TartanAirRaw_Multi(TartanAir_Multi):
             depthmap[depthmap > threshold] = 0.0
 
             image, depthmap, intrinsics = self._crop_resize_if_necessary(
-                image, depthmap, TARTANAIR_K.copy(), resolution, rng, info=(scene_dir, basename)
+                image, depthmap, self.K.copy(), resolution, rng, info=(scene_dir, basename)
             )
             img_mask, ray_mask = self.get_img_and_ray_masks(self.is_metric, v, rng, p=[0.75, 0.2, 0.05])
             views.append(dict(
@@ -93,3 +103,23 @@ class TartanAirRaw_Multi(TartanAir_Multi):
             ))
         assert len(views) == num_views
         return views
+
+
+class TartanAirV2Raw_Multi(TartanAirRaw_Multi):
+    """TartanAir v2 (<env>/<Data_easy|Data_hard>/<Pxxx>/{image_lcam_front,
+    depth_lcam_front, pose_lcam_front.txt}): 640x640 pinhole, 90 deg FoV; depth
+    is a float32 stored in the four 8-bit channels of an RGBA png."""
+
+    MODES = ("Data_easy", "Data_hard")
+    IMG = ("image_lcam_front", "_lcam_front.png")
+    DEPTH = ("depth_lcam_front", "_lcam_front_depth.png")
+    POSE_FILE = "pose_lcam_front.txt"
+    K = np.array([[320.0, 0.0, 320.0], [0.0, 320.0, 320.0], [0.0, 0.0, 1.0]], np.float32)
+
+    def read_depth(self, path):
+        # cv2 directly: imread_cv2 applies BGR->RGB to any 3-D array, which would
+        # reorder (and drop) the bytes of the packed float
+        rgba = cv2.imread(path, cv2.IMREAD_UNCHANGED)
+        if rgba is None:
+            raise IOError(f"Could not load depth {path}")
+        return rgba.view("<f4").squeeze(-1).copy()
