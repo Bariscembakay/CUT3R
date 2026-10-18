@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # Frame-anchor suite on a checkpoint: stream scenes, ship per-frame records.
 # Usage: sbatch [...] eval_job.sh <ckpt> <relative 0|1> <arm_name> <benchmark> <scene...>
-#   ORDER=forward|palindrome|chunked (default forward)  EXTRA_ARGS="--chunk 50 ..."
+#   ORDER=forward|palindrome|chunked (default forward)  EXTRA_ARGS="--chunk 50 ..."  CAMPAIGN=<dir> (default cut3r_rel/pilot_eval)
 set -euo pipefail
 CKPT="$1"; REL="$2"; ARM="$3"; BENCH="$4"; shift 4
 REPO="${REPO:-$HOME/CUT3R}"
-CAMPAIGN=/group/compact-3dmem/campaigns/cut3r_rel/pilot_eval
+CAMPAIGN="${CAMPAIGN:-/group/compact-3dmem/campaigns/cut3r_rel/pilot_eval}"
 source "$REPO/rel/cluster/setup_env.sh"
 PY="${MAMBA_ROOT_PREFIX:-/scratch/$USER/micromamba}/envs/cut3r/bin/python"
 case "$BENCH" in
