@@ -50,6 +50,7 @@ class BaseMultiViewDataset(EasyDataset):
         seq_aug_crop=False,
         video_only=False,
         no_raymap=False,
+        static_prob=0.0,
     ):
         assert num_views is not None, "undefined num_views"
         self.num_views = num_views
@@ -85,6 +86,9 @@ class BaseMultiViewDataset(EasyDataset):
         # raymap encodes the camera in frame-0 coordinates).
         self.video_only = video_only
         self.no_raymap = no_raymap
+        # Opt-in: with this probability, an ordered clip repeats one frame, so a
+        # relative-pose model sees an exact identity step (zero motion).
+        self.static_prob = static_prob
 
     def __len__(self):
         return len(self.scenes)
@@ -181,7 +185,17 @@ class BaseMultiViewDataset(EasyDataset):
             shuffled_list = [item for block in shuffled_blocks for item in block]
             return shuffled_list
 
-    def get_seq_from_start_id(
+    def get_seq_from_start_id(self, num_views, id_ref, ids_all, rng, *args, **kwargs):
+        pos, is_video = self._get_seq_from_start_id(num_views, id_ref, ids_all, rng, *args, **kwargs)
+        # short-circuit first: with static_prob == 0 no random number is drawn,
+        # so sampling stays identical to upstream
+        if self.static_prob and is_video and len(pos) > 1 and rng.random() < self.static_prob:
+            pos = list(pos)
+            j = int(rng.integers(1, len(pos)))
+            pos[j] = pos[j - 1]
+        return pos, is_video
+
+    def _get_seq_from_start_id(
         self,
         num_views,
         id_ref,

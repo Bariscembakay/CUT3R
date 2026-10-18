@@ -76,6 +76,31 @@ def main():
     check("rel criterion, frame-0 preds (must be > 0): pose", pose, False)
     same = torch.allclose(Regr3DPoseRel._prev_pose(batch, 1), batch[0]["camera_pose"])
     check("view 1: previous view is view 0 (1 = yes)", float(same), False)
+
+    # v2: angle rotation loss, window 16, composed pointmaps; needs a 20-view clip
+    ds20 = ds.replace("num_views=8", "num_views=20").replace("no_raymap=True", "no_raymap=True, static_prob=0.0")
+    b20 = next(iter(get_data_loader(ds20, batch_size=2, num_workers=0, accelerator=Accelerator(cpu=True),
+                                    shuffle=False, fixed_length=True)))
+    v2 = Regr3DPoseRel(L21, norm_mode="?avg_dis", sky_loss_value=0, window=16, rot_loss="angle",
+                       rot_weight=10.0, composed_pts_ks=(2, 4, 8, 16))
+    R20, A20 = fake_preds(b20, True), fake_preds(b20, False)
+    d20 = [{k: v.detach() for k, v in p.items()} for p in R20]
+    loss, det = v2(b20, R20)
+    check("v2, rel preds, 20-view clip: total", float(loss), True)
+    check("  pose (angle, composed to 16)", float(det["pose_loss"]), True)
+    check("  composed pointmaps", det["composed_pts_loss"], True)
+    loss, det = v2(b20[16:], R20[16:], views_all=b20, chunk_start=16, preds_all=d20)
+    check("v2, chunk [16:20] composing back into detached [0:16]: composed pts", det["composed_pts_loss"], True)
+    loss, det = v2(b20, A20)
+    check("v2, frame-0 preds (must be > 0): composed pts", det["composed_pts_loss"], False)
+
+    # static-frame augmentation: with probability 1 one frame must repeat
+    dss = ds.replace("no_raymap=True", "no_raymap=True, static_prob=1.0")
+    bs = next(iter(get_data_loader(dss, batch_size=2, num_workers=0, accelerator=Accelerator(cpu=True),
+                                   shuffle=False, fixed_length=True)))
+    rep = min(sum(bool(torch.allclose(bs[i]["camera_pose"][b], bs[i - 1]["camera_pose"][b]))
+                  for i in range(1, len(bs))) for b in range(bs[0]["camera_pose"].shape[0]))
+    check("static_prob=1.0: every sample has an adjacent repeated view (>= 1)", float(rep), False)
     print("ALL PASS" if ok else "SOME FAILED")
     sys.exit(0 if ok else 1)
 

@@ -25,11 +25,13 @@ test_criterion: Regr3DPose(L21, norm_mode='?avg_dis', gt_scale=True, sky_loss_va
 # Ordered video only and no raymap queries, in both arms (see base dataset).
 # /data, or a node-local staged copy (cluster job sets DATA_ROOT).
 data_root: ${oc.env:DATA_ROOT,/data}
+# Probability that an ordered clip repeats one frame (exact identity step); 0 = upstream sampling.
+static_prob: 0.0
 pilot_res: "[(512, 384), (512, 336), (512, 288), (512, 256), (512, 208), (512, 144), (384, 512), (336, 512), (288, 512), (256, 512)]"
 dataset1: VideoRGBD_Multi(split='train', ROOT='${data_root}/arkitscenes-cut3r-video', name='arkitscenes_video',
-  max_interval=4, video_only=True, no_raymap=True, aug_crop=16, resolution=${pilot_res},
+  max_interval=4, video_only=True, no_raymap=True, static_prob=${static_prob}, aug_crop=16, resolution=${pilot_res},
   transform=SeqColorJitter, num_views=${num_views}, n_corres=${n_corres_train})
-dataset2: TartanAirRaw_Multi(ROOT='${data_root}/tartanair-v1', video_only=True, no_raymap=True,
+dataset2: TartanAirRaw_Multi(ROOT='${data_root}/tartanair-v1', video_only=True, no_raymap=True, static_prob=${static_prob},
   aug_crop=16, resolution=${pilot_res}, transform=SeqColorJitter, num_views=${num_views},
   n_corres=${n_corres_train})
 train_dataset: 2000 @ ${dataset1} + 2000 @ ${dataset2}

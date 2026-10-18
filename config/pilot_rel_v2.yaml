@@ -1,0 +1,8 @@
+# v2 = v2 loss + static-frame augmentation (an ordered clip repeats one frame
+# with probability 0.1, giving an exact identity step).
+defaults:
+  - pilot_rel_v2loss
+  - _self_
+
+static_prob: 0.1
+exp_name: pilot_rel_v2

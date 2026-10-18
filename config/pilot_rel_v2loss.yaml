@@ -1,0 +1,11 @@
+# v2 loss on the pilot data: rotation as a geodesic angle (x10) instead of
+# quaternion L2, composed window 16, composed pointmaps at k = 2, 4, 8, 16.
+# Everything else as pilot_rel.yaml.
+defaults:
+  - pilot_rel
+  - _self_
+
+v2_criterion: Regr3DPoseRel(L21, norm_mode='?avg_dis', window=16, rot_loss='angle', rot_weight=10.0, composed_pts_ks=(2, 4, 8, 16))
+train_criterion: ConfLoss(${v2_criterion}, alpha=0.2) + RGBLoss(MSE)
+test_criterion: Regr3DPoseRel(L21, norm_mode='?avg_dis', gt_scale=True, sky_loss_value=0, window=16, rot_loss='angle', rot_weight=10.0, composed_pts_ks=(2, 4, 8, 16))
+exp_name: pilot_rel_v2loss

@@ -20,6 +20,7 @@ from dust3r.utils.camera import (
     camera_to_pose_encoding,
     relative_pose_absT_quatR,
     matrix_to_quaternion,
+    quaternion_to_matrix,
 )
 
 
@@ -1057,12 +1058,51 @@ class Regr3DPoseRel(Regr3DPose):
 
     Needs the whole clip as context: `views_all`, `chunk_start` (index of
     gts[0] in the clip) and `preds_all` (detached predictions of the clip so far).
+
+    v2 options (defaults reproduce v1):
+    - rot_loss="angle": rotation error as the geodesic angle (rad) x rot_weight
+      instead of quaternion L2, which near identity is ~theta/2 and lets a
+      constant 0.1-0.2 deg/frame offset survive training.
+    - composed_pts_ks: also compare the composed transform applied to the
+      predicted self pointmap with GT points in camera t-k, for these k; this
+      prices rotation error in metres at scene depth.
     """
 
-    def __init__(self, criterion, window=4, composed_weight=1.0, **kw):
+    def __init__(self, criterion, window=4, composed_weight=1.0, rot_loss="quat", rot_weight=1.0,
+                 composed_pts_ks=(), composed_pts_weight=1.0, **kw):
         super().__init__(criterion, **kw)
+        assert rot_loss in ("quat", "angle")
         self.window = window
         self.composed_weight = composed_weight
+        self.rot_loss = rot_loss
+        self.rot_weight = rot_weight
+        self.composed_pts_ks = tuple(k for k in composed_pts_ks if 2 <= k <= window)
+        self.composed_pts_weight = composed_pts_weight
+
+    @staticmethod
+    def _angle(Rp, Rg):
+        """Geodesic angle between rotations, stable at zero (atan2, not acos)."""
+        E = Rp.transpose(-1, -2) @ Rg
+        v = torch.stack([E[..., 2, 1] - E[..., 1, 2], E[..., 0, 2] - E[..., 2, 0], E[..., 1, 0] - E[..., 0, 1]], -1)
+        return torch.atan2(torch.sqrt((v * v).sum(-1) + 1e-12), E[..., 0, 0] + E[..., 1, 1] + E[..., 2, 2] - 1)
+
+    def _rot_err(self, Rp, Rg):
+        if self.rot_loss == "angle":
+            return self.rot_weight * self._angle(Rp, Rg)
+        q_pr, q_gt = matrix_to_quaternion(Rp), matrix_to_quaternion(Rg)
+        return torch.minimum(torch.norm(q_pr - q_gt, dim=-1), torch.norm(q_pr + q_gt, dim=-1))
+
+    def compute_pose_loss(self, gt_poses, pred_poses, masks=None):
+        if self.rot_loss == "quat":
+            return super().compute_pose_loss(gt_poses, pred_poses, masks)
+        if masks is not None and not any(masks):
+            return torch.tensor(0.0)
+        t_err = torch.stack([torch.norm(pr[0] - gt[0], dim=-1) for gt, pr in zip(gt_poses, pred_poses)], 1)
+        r_err = torch.stack([self._rot_err(quaternion_to_matrix(pr[1]), quaternion_to_matrix(gt[1]))
+                             for gt, pr in zip(gt_poses, pred_poses)], 1)
+        if masks is None:
+            return t_err.mean() + r_err.mean()
+        return t_err[masks].mean() + r_err[masks].mean()
 
     @staticmethod
     def _prev_pose(views, g):
@@ -1100,17 +1140,19 @@ class Regr3DPoseRel(Regr3DPose):
         pr_poses = [(pr["camera_pose"][:, :3] / nf, pr["camera_pose"][:, 3:]) for pr in preds]
         pose_masks = nf.squeeze(-1) > eps
 
-        composed = self._composed_pose_loss(views, gts, preds, preds_all, chunk_start, nf, pose_masks)
+        composed, composed_pts = self._composed_pose_loss(views, gts, preds, preds_all, chunk_start, nf,
+                                                          pose_masks, valids)
         skys = [gt["sky_mask"] & ~valid for gt, valid in zip(gts, valids)]
         return (gt_pts_self, gt_pts_cross, pr_pts_self, pr_pts_cross, gt_poses, pr_poses,
-                valids, skys, pose_masks, {"composed_pose_loss": composed})
+                valids, skys, pose_masks, {"composed_pose_loss": composed, "composed_pts_loss": composed_pts})
 
-    def _composed_pose_loss(self, views, gts, preds, preds_all, chunk_start, nf, pose_masks):
+    def _composed_pose_loss(self, views, gts, preds, preds_all, chunk_start, nf, pose_masks, valids):
         def step(m):  # predicted camera m -> camera m-1, 4x4, grad only inside this chunk
             src = preds[m - chunk_start] if m >= chunk_start else preds_all[m]
             return pose_encoding_to_camera(src["camera_pose"])
 
-        terms = []
+        terms, pts_terms = [], []
+        nf4 = nf[:, :, None, None]
         for j in range(len(gts)):
             g = chunk_start + j
             C = step(g)
@@ -1121,21 +1163,29 @@ class Regr3DPoseRel(Regr3DPose):
                 C = step(g - k + 1) @ C
                 # no composition across a reset: the steps would be in different frames
                 ok = ok & ~views[g - k + 1]["reset"].bool() & ~views[g - k]["reset"].bool()
+                if not ok.any():
+                    continue
                 T = inv(views[g - k]["camera_pose"]) @ views[g]["camera_pose"]
                 t_err = torch.norm((C[:, :3, 3] - T[:, :3, 3]) / nf, dim=-1)
-                q_pr, q_gt = matrix_to_quaternion(C[:, :3, :3]), matrix_to_quaternion(T[:, :3, :3])
-                q_err = torch.minimum(torch.norm(q_pr - q_gt, dim=-1), torch.norm(q_pr + q_gt, dim=-1))
-                if ok.any():
-                    terms.append((t_err + q_err)[ok].mean())
-        if not terms:
-            return torch.zeros((), device=nf.device)
-        return torch.stack(terms).mean()
+                terms.append((t_err + self._rot_err(C[:, :3, :3], T[:, :3, :3]))[ok].mean())
+                if k in self.composed_pts_ks:
+                    pr = geotrf(C, preds[j]["pts3d_in_self_view"]) / nf4
+                    gt = geotrf(inv(views[g - k]["camera_pose"]), gts[j]["pts3d"]) / nf4
+                    m = valids[j] & ok[:, None, None]
+                    if m.any():
+                        pts_terms.append(torch.norm(pr - gt, dim=-1)[m].mean())
+        zero = torch.zeros((), device=nf.device)
+        return (torch.stack(terms).mean() if terms else zero,
+                torch.stack(pts_terms).mean() if pts_terms else zero)
 
     def compute_loss(self, gts, preds, **kw):
         loss, details = super().compute_loss(gts, preds, **kw)
         composed = details.pop("composed_pose_loss")
-        details["pose_loss"] = details["pose_loss"] + self.composed_weight * composed
+        composed_pts = details.pop("composed_pts_loss")
+        details["pose_loss"] = (details["pose_loss"] + self.composed_weight * composed
+                                + self.composed_pts_weight * composed_pts)
         details["composed_pose_loss"] = float(composed)
+        details["composed_pts_loss"] = float(composed_pts)
         return loss, details
 
 
