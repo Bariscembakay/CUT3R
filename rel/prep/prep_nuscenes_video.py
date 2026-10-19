@@ -1,6 +1,7 @@
 #!/usr/bin/env python
-"""nuScenes (trainval) front camera -> per-frame video format read by
-`VideoRGBD_Multi`, with sparse metric depth from LiDAR:
+"""nuScenes (trainval) cameras -> per-frame video format read by
+`VideoRGBD_Multi`, with sparse metric depth from LiDAR (default: front camera
+only; with several --channels, scene dirs are scene_<name>__<channel>):
 
   <out>/scans_train/scene_<name>/color/<ts>.jpg   512x288 from CAM_FRONT (1600x900, ~12 Hz)
                                 /depth/<ts>.png   uint16 mm: the LIDAR_TOP sweep nearest in
@@ -107,6 +108,7 @@ def main():
     ap.add_argument("--out", required=True)
     ap.add_argument("--max-scenes", type=int, default=0)
     ap.add_argument("--workers", type=int, default=32)
+    ap.add_argument("--channels", nargs="+", default=["CAM_FRONT"])
     args = ap.parse_args()
     meta = osp.join(args.root, "v1.0-trainval")
     load = lambda f: json.load(open(osp.join(meta, f)))  # noqa: E731
@@ -118,26 +120,27 @@ def main():
     keep = {}
     for sd in load("sample_data.json"):
         ch = channel[calib[sd["calibrated_sensor_token"]]["sensor_token"]]
-        if ch in ("CAM_FRONT", "LIDAR_TOP"):
+        if ch in args.channels or ch == "LIDAR_TOP":
             keep[sd["token"]] = (ch, sd)
-    print(f"kept {len(keep)} CAM_FRONT/LIDAR_TOP records; loading ego_pose.json ...", flush=True)
+    print(f"kept {len(keep)} {'/'.join(args.channels)}/LIDAR_TOP records; loading ego_pose.json ...", flush=True)
     ego = {e["token"]: se3(e["translation"], e["rotation"])
            for e in load("ego_pose.json") if e["token"] in keep}
-    per_scene = defaultdict(lambda: ([], []))
+    per_scene = defaultdict(lambda: defaultdict(list))
     for ch, sd in keep.values():
         cs = calib[sd["calibrated_sensor_token"]]
         rec = dict(timestamp=sd["timestamp"], filename=sd["filename"], ego=ego[sd["ego_pose_token"]],
                    calib=se3(cs["translation"], cs["rotation"]))
-        if ch == "CAM_FRONT":
+        if ch != "LIDAR_TOP":
             rec["K"] = np.array(cs["camera_intrinsic"], float)
-        per_scene[scene_name[scene_of_sample[sd["sample_token"]]]][0 if ch == "CAM_FRONT" else 1].append(rec)
+        per_scene[scene_name[scene_of_sample[sd["sample_token"]]]][ch].append(rec)
     jobs = []
-    for name in sorted(per_scene):
-        cams, lidars = (sorted(x, key=lambda r: r["timestamp"]) for x in per_scene[name])
-        jobs.append((name, cams, lidars, args.root, args.out))
-    if args.max_scenes:
-        jobs = jobs[: args.max_scenes]
-    print(f"{len(jobs)} scenes", flush=True)
+    by_time = lambda x: sorted(x, key=lambda r: r["timestamp"])  # noqa: E731
+    for name in sorted(per_scene)[: args.max_scenes or None]:
+        lidars = by_time(per_scene[name]["LIDAR_TOP"])
+        for ch in args.channels:
+            out_name = f"{name}__{ch}" if len(args.channels) > 1 else name
+            jobs.append((out_name, by_time(per_scene[name][ch]), lidars, args.root, args.out))
+    print(f"{len(jobs)} scene videos", flush=True)
     os.makedirs(args.out, exist_ok=True)
     log = {}
     with Pool(args.workers) as pool:
