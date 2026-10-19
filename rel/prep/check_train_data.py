@@ -23,7 +23,11 @@ DATASETS = {
     "tartanair_v2": f"TartanAirV2Raw_Multi(ROOT='/data/tartanair-v2', {COMMON})",
     "scannet": f"ScanNetExtracted_Multi(split='train', ROOT='/data/scannet-v2-extracted', max_interval=30, {COMMON})",
     "nuscenes": f"VideoRGBD_Multi(split='train', ROOT='/data/nuscenes-cut3r-video', name='nuscenes_front', max_interval=12, {COMMON})",
+    "tartanground": f"TartanGroundRaw_Multi(ROOT='/data/tartanground', {COMMON})",
 }
+HOLDOUT = {"arkitscenes": "rel/splits/arkitscenes_val.txt", "tartanair_v1": "rel/splits/tartanair_val_envs.txt",
+           "tartanair_v2": "rel/splits/tartanair_val_envs.txt", "tartanground": "rel/splits/tartanair_val_envs.txt",
+           "scannet": "rel/splits/scannet_val.txt", "nuscenes": "rel/splits/nuscenes_val.txt"}
 
 
 def ypr(R):
@@ -51,7 +55,16 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--clips", type=int, default=24)
     ap.add_argument("--only", nargs="*", default=list(DATASETS))
+    ap.add_argument("--splits", action="store_true", help="only count train / val scenes under rel/splits")
     args = ap.parse_args()
+    if args.splits:
+        print("| dataset | train scenes | val scenes | train clip starts | val clip starts |\n|---|---|---|---|---|")
+        for name in args.only:
+            n = {m: eval(DATASETS[name][:-1] + f", holdout='{HOLDOUT[name]}', holdout_mode='{m}')")
+                 for m in ("exclude", "only")}
+            print(f"| {name} | {len(n['exclude'].scenes)} | {len(n['only'].scenes)} | {len(n['exclude'])} | {len(n['only'])} |",
+                  flush=True)
+        return
     rng = np.random.default_rng(0)
     print("| dataset | ordered clips | f/W p10/50/90 | |t| m/step p10/50/90 | rot deg/step p10/50/90 | median |yaw| / |pitch| / |roll| deg/step | reproj z/d median | within 5% |")
     print("|---|---|---|---|---|---|---|---|")
