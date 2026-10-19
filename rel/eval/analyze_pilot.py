@@ -35,6 +35,8 @@ RUNS = {
     "released, reset/50": f"{FA}/cut3r_pub_chunk50_ov1_s1",
     "A, reset/50": f"{PE}/pilot_frame0_chunk50_ov1",
     "CUT3R-rel, reset/50": f"{PE}/pilot_rel_chunk50_ov1",
+    "scale frame-0, reset/50": f"{SE}/scale_frame0_chunk50_ov1",
+    "scale REL, reset/50": f"{SE}/scale_rel_chunk50_ov1",
 }
 COLORS = {"released": "#2a78d6", "A (frame-0 ft)": "#eb6834", "CUT3R-rel": "#1baf7a",
           "v2 loss": "#eda100", "v2 loss + static": "#e87ba4",
@@ -85,7 +87,7 @@ def main():
                 geom[r] = g
         summary[bench] = dict(pose=pose, geom=geom)
         if pose:
-            keys = (["t_err", "r_err"] if bench == "kitti" else []) + \
+            keys = (["t_err", "t_err_scaled", "r_err"] if bench == "kitti" else []) + \
                 ["ate_sim3", "ate_se3", "rpe10_rot", "rpe10_trans", "fwd_speed", "max_dist"]
             keys = [k for k in keys if any(np.isfinite(v[k]) for p in pose.values() for v in p.values())]
             md.append("| run | " + " | ".join(keys) + " |\n|" + "---|" * (len(keys) + 1))

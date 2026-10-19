@@ -135,6 +135,12 @@ def pose_scores(P, G, kitti):
     s["final_dist_ratio"] = float(np.linalg.norm(P[-1, :3, 3]) / max(np.linalg.norm(G[-1, :3, 3]), 1e-6))
     if kitti:
         s["t_err"], s["r_err"] = kitti_odometry_error(P, G)
+        # Monocular-style: one scale per sequence, so a constant metric-scale bias
+        # does not count as drift.
+        path = lambda T: np.linalg.norm(np.diff(T[:, :3, 3], axis=0), axis=1).sum()  # noqa: E731
+        Ps = P.copy()
+        Ps[:, :3, 3] *= path(G) / path(P)
+        s["t_err_scaled"] = kitti_odometry_error(Ps, G)[0]
     return s
 
 
