@@ -32,6 +32,8 @@ RUNS = {
     "scale frame-0": f"{SE}/scale_frame0_continuous",
     "scale REL ep5": f"{SE}/scale_rel_ep5_continuous",
     "scale REL": f"{SE}/scale_rel_continuous",
+    "TTT3R (released + TTT3R update)": f"{SE}/cut3r_pub_ttt3r_continuous",
+    "scale REL + TTT3R update": f"{SE}/scale_rel_ttt3r_continuous",
     "released, reset/50": f"{FA}/cut3r_pub_chunk50_ov1_s1",
     "A, reset/50": f"{PE}/pilot_frame0_chunk50_ov1",
     "CUT3R-rel, reset/50": f"{PE}/pilot_rel_chunk50_ov1",
@@ -40,7 +42,8 @@ RUNS = {
 }
 COLORS = {"released": "#2a78d6", "A (frame-0 ft)": "#eb6834", "CUT3R-rel": "#1baf7a",
           "v2 loss": "#eda100", "v2 loss + static": "#e87ba4",
-          "scale frame-0": "#a0522d", "scale REL ep5": "#7b5cc4", "scale REL": "#c22f2f"}
+          "scale frame-0": "#a0522d", "scale REL ep5": "#7b5cc4", "scale REL": "#c22f2f",
+          "TTT3R (released + TTT3R update)": "#17becf", "scale REL + TTT3R update": "#6b6b6b"}
 POS_BINS = [0, 50, 100, 200, 400, 800, 1600, 1e9]
 GEOM = ("world_shape_med", "self_shape_med", "ws_ratio", "self_absrel")
 
