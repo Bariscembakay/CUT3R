@@ -128,6 +128,14 @@ class TartanAirV2Raw_Multi(TartanAirRaw_Multi):
 
 class TartanGroundRaw_Multi(TartanAirV2Raw_Multi):
     """TartanGround: TartanAir v2's file layout and camera, recorded by ground robots
-    (legged, differential-drive, omnidirectional) at 10 Hz."""
+    at 10 Hz. Data_omni is left out by default: its camera never pitches or rolls
+    (0.000 deg on every step, 440 of 878 trajectories), which would teach a
+    relative-pose model to suppress both; the legged robot (Data_anymal) moves like
+    a real camera, 0.17 deg/step median."""
 
-    MODES = ("Data_anymal", "Data_diff", "Data_omni")
+    MODES = ("Data_anymal", "Data_diff")
+
+    def __init__(self, *args, modes=None, **kwargs):
+        if modes is not None:
+            self.MODES = tuple(modes)
+        super().__init__(*args, **kwargs)
