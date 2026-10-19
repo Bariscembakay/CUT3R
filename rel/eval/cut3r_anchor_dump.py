@@ -273,10 +273,36 @@ def frame_metrics(Xs, Xw, c2w, D, K, has_depth):
 
 
 # -------------------------------------------------------------------- main
-def run_stream(model, loader, device, resets=()):
+def ttt3r_logit_hooks(model):
+    """TTT3R (Chen et al. 2025, github.com/Inception3D/TTT3R) sets each state token's
+    update rate to the sigmoid of its pre-softmax cross-attention logit to the image
+    tokens, averaged over decoder layers, heads and keys. mean_j(q.k_j) = q.mean_j(k_j),
+    so this gets it from q and k without materialising the logits, and the forward
+    pass itself is untouched. Returns the list each step's per-layer means land in."""
+    logits = []
+
+    def hook(mod, inp, _):
+        query, key, _, qpos, kpos = inp
+        B, Nq, C = query.shape
+        h = mod.num_heads
+        q = mod.projq(query).reshape(B, Nq, h, C // h).permute(0, 2, 1, 3).float()
+        k = mod.projk(key).reshape(B, key.shape[1], h, C // h).permute(0, 2, 1, 3).float()
+        if mod.rope is not None:
+            q = mod.rope(q, qpos) if qpos is not None else q
+            k = mod.rope(k, kpos) if kpos is not None else k
+        logits.append((q @ k.mean(2).unsqueeze(-1)).squeeze(-1).mean(1) * mod.scale)  # [B, Nq]
+
+    for blk in model.dec_blocks_state:
+        blk.cross_attn.register_forward_hook(hook)
+    return logits
+
+
+def run_stream(model, loader, device, resets=(), ttt3r_logits=None):
     """Yields (batch, res) per stream position, one frame per recurrent step.
     A position in `resets` is predicted with the current state, which the model
-    then restores to its initial value, so the NEXT position starts fresh."""
+    then restores to its initial value, so the NEXT position starts fresh.
+    With `ttt3r_logits` (from ttt3r_logit_hooks) the state moves only part way to
+    its update, as in TTT3R; the first frame and the one after a reset update fully."""
     true = torch.tensor([True], device=device)
     false = torch.tensor([False], device=device)
     resets = set(resets)
@@ -293,9 +319,15 @@ def run_stream(model, loader, device, resets=()):
                 state_feat, state_pos = model._init_state(feat_i, pos_i)
                 mem = model.pose_retriever.mem.expand(1, -1, -1)
                 init_state_feat, init_mem = state_feat.clone(), mem.clone()
+            prev_state = state_feat
+            if ttt3r_logits is not None:
+                ttt3r_logits.clear()
             res, (state_feat, mem) = model._forward_decoder_step(
                 {i: view}, i, feat_i, pos_i, shape, init_state_feat, init_mem,
                 state_feat, state_pos, mem)
+            if ttt3r_logits is not None and i > 0 and i - 1 not in resets and i not in resets:
+                rate = torch.sigmoid(torch.stack(ttt3r_logits).mean(0))[..., None]
+                state_feat = state_feat * rate + prev_state * (1 - rate)
             yield it, res
 
 
@@ -331,6 +363,8 @@ def main():
     ap.add_argument("--relative", type=int, default=0,
                     help="CUT3R-rel checkpoint: the pose head predicts camera t -> camera t-1; "
                          "c2w_pred is then the chained pose and pose_head the raw output")
+    ap.add_argument("--state-update", default="cut3r", choices=["cut3r", "ttt3r"],
+                    help="ttt3r: confidence-weighted state update (TTT3R), training-free")
     ap.add_argument("--tf32", type=int, default=0,
                     help="croco.py turns TF32 matmul on at import; off by default so "
                          "arithmetic rounding cannot pose as a distance effect")
@@ -365,6 +399,7 @@ def main():
 
     device = "cuda"
     model = ARCroco3DStereo.from_pretrained(args.ckpt).to(device).eval()
+    ttt3r_logits = ttt3r_logit_hooks(model) if args.state_update == "ttt3r" else None
     loader = torch.utils.data.DataLoader(StreamDataset(frames, order, bool(args.hflip), bool(args.center_pp)), batch_size=1,
                                          num_workers=args.workers, pin_memory=True)
     os.makedirs(args.out, exist_ok=True)
@@ -373,7 +408,7 @@ def main():
     dump = {"Xs": [], "Xw": [], "conf_self": [], "conf": [], "depth": []}
     t0 = time.time()
     with torch.no_grad():
-        for it, res in run_stream(model, loader, device, resets):
+        for it, res in run_stream(model, loader, device, resets, ttt3r_logits):
             i = int(it["pos"])
             Xs = res["pts3d_in_self_view"][0].float()
             Xw = res["pts3d_in_other_view"][0].float()
@@ -424,7 +459,7 @@ def main():
                    overlap=args.overlap if args.order == "chunked" else None,
                    resets=resets,
                    ckpt=args.ckpt, relative=bool(args.relative), hflip=bool(args.hflip),
-                   center_pp=bool(args.center_pp), git=git_rev(), tf32=bool(args.tf32), gpu=torch.cuda.get_device_name(),
+                   center_pp=bool(args.center_pp), state_update=args.state_update, git=git_rev(), tf32=bool(args.tf32), gpu=torch.cuda.get_device_name(),
                    torch=torch.__version__, seconds=elapsed, fps=len(order) / elapsed,
                    hostname=os.uname().nodename, slurm_job=os.environ.get("SLURM_JOB_ID")),
               open(f"{args.out}/meta.json", "w"), indent=2)
