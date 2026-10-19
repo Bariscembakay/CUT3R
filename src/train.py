@@ -9,6 +9,7 @@ import datetime
 import json
 import numpy as np
 import os
+import re
 import sys
 import time
 import math
@@ -157,8 +158,14 @@ def train(args):
         fixed_length=args.fixed_length
     )
     printer.info("Building test dataset %s", args.test_dataset)
+    def test_set_name(dataset):
+        # class name, or the dataset's name= when one class serves several datasets
+        # (two VideoRGBD_Multi sets would otherwise overwrite each other's loader)
+        m = re.search(r"name=['\"]([^'\"]+)['\"]", dataset)
+        return m.group(1) if m else dataset.split("(")[0].split("@")[-1].strip()
+
     data_loader_test = {
-        dataset.split("(")[0]: build_dataset(
+        test_set_name(dataset): build_dataset(
             dataset,
             args.batch_size,
             args.num_workers,
@@ -168,6 +175,7 @@ def train(args):
         )
         for dataset in args.test_dataset.split("+")
     }
+    assert len(data_loader_test) == len(args.test_dataset.split("+")), "test dataset names collide"
 
     # model
     printer.info("Loading model: %s", args.model)
@@ -312,10 +320,12 @@ def train(args):
                 )
                 test_stats[test_name] = stats
 
-                # Save best of all
-                if stats["loss_med"] < best_so_far:
-                    best_so_far = stats["loss_med"]
-                    new_best = True
+            # Save best of all: the mean over test sets, so each one counts equally
+            # (upstream compared every set's own loss against one running best)
+            mean_med = float(np.mean([s["loss_med"] for s in test_stats.values()]))
+            if mean_med < best_so_far:
+                best_so_far = mean_med
+                new_best = True
         # Save more stuff
         write_log_stats(epoch, train_stats, test_stats)
 
