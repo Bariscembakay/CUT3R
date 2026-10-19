@@ -140,17 +140,18 @@ class StreamDataset(torch.utils.data.Dataset):
     the source image around its principal point before resizing, as CUT3R's
     training crop does, instead of load_images' plain centre crop."""
 
-    def __init__(self, frames, order, hflip=False, center_pp=False):
+    def __init__(self, frames, order, hflip=False, center_pp=False, crop_fw=0.0):
         self.frames = frames
         self.order = order
         self.hflip = hflip
         self.center_pp = center_pp
+        self.crop_fw = crop_fw
 
     def __len__(self):
         return len(self.order)
 
     def __getitem__(self, pos):
-        if self.hflip or self.center_pp:
+        if self.hflip or self.center_pp or self.crop_fw:
             return self._get_modified(pos)
         f = self.frames[self.order[pos]]
         im = load_images([f["img"]], size=512, verbose=False)[0]
@@ -193,6 +194,16 @@ class StreamDataset(torch.utils.data.Dataset):
             K[0, 2] -= b0[0]
             K[1, 2] -= b0[1]
             d = None if d is None else d[b0[1]:b0[3], b0[0]:b0[2]].copy()
+            W1, H1 = img.size
+        if self.crop_fw:
+            # narrower field of view: keep the full height, crop the width around the
+            # principal point to fx / crop_fw, so focal / width after resize = crop_fw
+            Wt = int(round(K[0, 0] / self.crop_fw))
+            assert Wt <= W1, f"crop_fw {self.crop_fw} needs width {Wt} > {W1}"
+            x0 = int(np.clip(round(K[0, 2] - Wt / 2), 0, W1 - Wt))
+            img = img.crop((x0, 0, x0 + Wt, H1))
+            K[0, 2] -= x0
+            d = None if d is None else d[:, x0:x0 + Wt].copy()
             W1, H1 = img.size
         new, box = crop_geometry(W1, H1)
         img = _resize_pil_image(img, 512).crop(box)
@@ -360,6 +371,8 @@ def main():
     ap.add_argument("--ckpt", default=CKPT)
     ap.add_argument("--hflip", type=int, default=0, help="mirror the video left-right (GT mirrored too)")
     ap.add_argument("--center-pp", type=int, default=0, help="crop around the principal point, like training")
+    ap.add_argument("--crop-fw", type=float, default=0.0,
+                    help="crop the width so focal / width = this (narrower field of view); 0 = off")
     ap.add_argument("--relative", type=int, default=0,
                     help="CUT3R-rel checkpoint: the pose head predicts camera t -> camera t-1; "
                          "c2w_pred is then the chained pose and pose_head the raw output")
@@ -400,7 +413,7 @@ def main():
     device = "cuda"
     model = ARCroco3DStereo.from_pretrained(args.ckpt).to(device).eval()
     ttt3r_logits = ttt3r_logit_hooks(model) if args.state_update == "ttt3r" else None
-    loader = torch.utils.data.DataLoader(StreamDataset(frames, order, bool(args.hflip), bool(args.center_pp)), batch_size=1,
+    loader = torch.utils.data.DataLoader(StreamDataset(frames, order, bool(args.hflip), bool(args.center_pp), args.crop_fw), batch_size=1,
                                          num_workers=args.workers, pin_memory=True)
     os.makedirs(args.out, exist_ok=True)
 
@@ -459,7 +472,7 @@ def main():
                    overlap=args.overlap if args.order == "chunked" else None,
                    resets=resets,
                    ckpt=args.ckpt, relative=bool(args.relative), hflip=bool(args.hflip),
-                   center_pp=bool(args.center_pp), state_update=args.state_update, git=git_rev(), tf32=bool(args.tf32), gpu=torch.cuda.get_device_name(),
+                   center_pp=bool(args.center_pp), crop_fw=args.crop_fw, state_update=args.state_update, git=git_rev(), tf32=bool(args.tf32), gpu=torch.cuda.get_device_name(),
                    torch=torch.__version__, seconds=elapsed, fps=len(order) / elapsed,
                    hostname=os.uname().nodename, slurm_job=os.environ.get("SLURM_JOB_ID")),
               open(f"{args.out}/meta.json", "w"), indent=2)
