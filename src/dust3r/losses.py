@@ -1100,18 +1100,42 @@ class Regr3DPoseRel(Regr3DPose):
         t_err = torch.stack([torch.norm(pr[0] - gt[0], dim=-1) for gt, pr in zip(gt_poses, pred_poses)], 1)
         r_err = torch.stack([self._rot_err(quaternion_to_matrix(pr[1]), quaternion_to_matrix(gt[1]))
                              for gt, pr in zip(gt_poses, pred_poses)], 1)
+        # With ray-only query views, mask per view (set by get_all_pts3d): upstream
+        # masks the whole clip by the last view's img_mask.
+        view_masks = getattr(self, "_view_pose_masks", None)
+        if view_masks is not None:
+            masks = view_masks
         if masks is None:
             return t_err.mean() + r_err.mean()
         return t_err[masks].mean() + r_err[masks].mean()
 
     @staticmethod
-    def _prev_pose(views, g):
-        """c2w of the view each view g is relative to (itself at a clip start or after a reset)."""
-        cur = views[g]["camera_pose"]
-        if g == 0:
-            return cur
-        restart = views[g - 1]["reset"].bool()[:, None, None]
-        return torch.where(restart, cur, views[g - 1]["camera_pose"])
+    def _ref_index(views, g):
+        """Per sample, the index of the view that view g is predicted relative to: the
+        last image view before it (ray-only query views never update the state), or g
+        itself at a clip start or right after a reset. Without ray-only views this is
+        g - 1 except at those boundaries."""
+        reset_g = views[g]["reset"]
+        ref = torch.full(reset_g.shape, g, dtype=torch.long, device=reset_g.device)
+        todo = torch.ones(reset_g.shape, dtype=torch.bool, device=reset_g.device)
+        for p in range(g - 1, -1, -1):
+            if not todo.any():
+                break
+            reset = views[p]["reset"].bool()
+            img = views[p]["img_mask"].bool() if "img_mask" in views[p] else torch.ones_like(reset)
+            hit = todo & (reset | img)
+            ref = torch.where(hit & ~reset, torch.full_like(ref, p), ref)
+            todo = todo & ~hit
+        return ref
+
+    @staticmethod
+    def _gather(mats, idx):
+        """Row b of mats[idx[b]]: mats is a list over views of [B, ...] tensors."""
+        return torch.stack(mats)[idx, torch.arange(len(idx), device=idx.device)]
+
+    def _prev_pose(self, views, g):
+        """c2w of the view each view g is relative to."""
+        return self._gather([v["camera_pose"] for v in views[: g + 1]], self._ref_index(views, g))
 
     def get_all_pts3d(self, gts, preds, views_all=None, chunk_start=0, preds_all=None, eps=1e-3, **kw):
         views = views_all if views_all is not None else gts
@@ -1139,6 +1163,9 @@ class Regr3DPoseRel(Regr3DPose):
         gt_poses = [(g[:, :3] / nf, g[:, 3:]) for g in gt_poses]
         pr_poses = [(pr["camera_pose"][:, :3] / nf, pr["camera_pose"][:, 3:]) for pr in preds]
         pose_masks = nf.squeeze(-1) > eps
+        # a ray-only view's ray map already holds its pose: no pose loss there
+        img = torch.stack([gt["img_mask"].bool() for gt in gts], 1) if "img_mask" in gts[0] else None
+        self._view_pose_masks = None if img is None or img.all() else pose_masks[:, None] & img
 
         composed, composed_pts = self._composed_pose_loss(views, gts, preds, preds_all, chunk_start, nf,
                                                           pose_masks, valids)
@@ -1147,30 +1174,42 @@ class Regr3DPoseRel(Regr3DPose):
                 valids, skys, pose_masks, {"composed_pose_loss": composed, "composed_pts_loss": composed_pts})
 
     def _composed_pose_loss(self, views, gts, preds, preds_all, chunk_start, nf, pose_masks, valids):
-        def step(m):  # predicted camera m -> camera m-1, 4x4, grad only inside this chunk
+        """Chains run back through each view's reference (the previous image view), so
+        a query view never enters a chain; with image views only, the k-th link is
+        view g - k. A chain ends at a clip start or reset, where a view is its own
+        reference: no composition across frames that do not share a state."""
+        def step(m):  # predicted camera m -> its reference camera, 4x4, grad only inside this chunk
             src = preds[m - chunk_start] if m >= chunk_start else preds_all[m]
             return pose_encoding_to_camera(src["camera_pose"])
 
+        n = chunk_start + len(gts)
+        refs = torch.stack([self._ref_index(views, m) for m in range(n)])  # [n, B]
+        steps = torch.stack([step(m) for m in range(n)])  # [n, B, 4, 4]
+        poses = torch.stack([v["camera_pose"] for v in views[:n]])
+        rows = torch.arange(refs.shape[1], device=refs.device)
         terms, pts_terms = [], []
         nf4 = nf[:, :, None, None]
         for j in range(len(gts)):
             g = chunk_start + j
-            C = step(g)
+            C = steps[g]
+            prev = torch.full_like(refs[g], g)
+            cur = refs[g]  # the chain's far end after k - 1 links
             ok = pose_masks.clone()
+            if "img_mask" in views[g]:
+                ok = ok & views[g]["img_mask"].bool()
             for k in range(2, self.window + 1):
-                if g - k < 0:
-                    break
-                C = step(g - k + 1) @ C
-                # no composition across a reset: the steps would be in different frames
-                ok = ok & ~views[g - k + 1]["reset"].bool() & ~views[g - k]["reset"].bool()
+                ok = ok & (cur != prev)
+                prev, cur = cur, refs[cur, rows]
+                ok = ok & (cur != prev)
                 if not ok.any():
                     continue
-                T = inv(views[g - k]["camera_pose"]) @ views[g]["camera_pose"]
+                C = steps[prev, rows] @ C
+                T = inv(poses[cur, rows]) @ views[g]["camera_pose"]
                 t_err = torch.norm((C[:, :3, 3] - T[:, :3, 3]) / nf, dim=-1)
                 terms.append((t_err + self._rot_err(C[:, :3, :3], T[:, :3, :3]))[ok].mean())
                 if k in self.composed_pts_ks:
                     pr = geotrf(C, preds[j]["pts3d_in_self_view"]) / nf4
-                    gt = geotrf(inv(views[g - k]["camera_pose"]), gts[j]["pts3d"]) / nf4
+                    gt = geotrf(inv(poses[cur, rows]), gts[j]["pts3d"]) / nf4
                     m = valids[j] & ok[:, None, None]
                     if m.any():
                         pts_terms.append(torch.norm(pr - gt, dim=-1)[m].mean())

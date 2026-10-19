@@ -1,3 +1,4 @@
+import os.path as osp
 import PIL
 import numpy as np
 import torch
@@ -51,6 +52,9 @@ class BaseMultiViewDataset(EasyDataset):
         video_only=False,
         no_raymap=False,
         static_prob=0.0,
+        holdout=None,
+        holdout_mode="exclude",
+        raymap_frame="first",
     ):
         assert num_views is not None, "undefined num_views"
         self.num_views = num_views
@@ -89,6 +93,24 @@ class BaseMultiViewDataset(EasyDataset):
         # Opt-in: with this probability, an ordered clip repeats one frame, so a
         # relative-pose model sees an exact identity step (zero motion).
         self.static_prob = static_prob
+        # Validation split as a file of scene / environment names, one per line
+        # (relative paths are from the repo root): "exclude" drops them, "only"
+        # keeps just them. Loaders that support it call keep_scene().
+        assert holdout_mode in ("exclude", "only")
+        if holdout is not None and not osp.isabs(holdout):
+            holdout = osp.join(osp.dirname(osp.abspath(__file__)), "..", "..", "..", "..", holdout)
+        self.holdout = None if holdout is None else {l.strip().lower() for l in open(holdout) if l.strip()}
+        self.holdout_mode = holdout_mode
+        # "last_image" (CUT3R-rel): a view's ray map is in the camera it is predicted
+        # relative to -- the last image view before it, since ray-only views never
+        # update the state -- instead of frame 0.
+        assert raymap_frame in ("first", "last_image")
+        self.raymap_frame = raymap_frame
+
+    def keep_scene(self, name):
+        if self.holdout is None:
+            return True
+        return (name.lower() in self.holdout) == (self.holdout_mode == "only")
 
     def __len__(self):
         return len(self.scenes)
@@ -382,6 +404,7 @@ class BaseMultiViewDataset(EasyDataset):
         first_view_camera_pose = views[0]["camera_pose"]
         transform = SeqColorJitter() if self.is_seq_color_jitter else self.transform
 
+        ray_ref = None  # raymap_frame == "last_image": pose of the last image view so far
         for v, view in enumerate(views):
             assert (
                 "pts3d" not in view
@@ -403,8 +426,16 @@ class BaseMultiViewDataset(EasyDataset):
                     view["camera_pose"]
                 ).all(), f"NaN in camera pose for view {view_name(view)}"
 
+            if self.raymap_frame == "first":
+                ref = first_view_camera_pose
+            else:
+                ref = view["camera_pose"] if ray_ref is None else ray_ref
+                if view.get("reset", False):
+                    ray_ref = None  # the next view starts a fresh state
+                elif view["img_mask"]:
+                    ray_ref = view["camera_pose"]
             ray_map = get_ray_map(
-                first_view_camera_pose,
+                ref,
                 view["camera_pose"],
                 view["camera_intrinsics"],
                 height,

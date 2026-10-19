@@ -23,7 +23,7 @@ from .realestate10k import RE10K_Multi
 from .scannet import ScanNet_Multi
 from .video_rgbd import VideoRGBD_Multi
 from .scannet_extracted import ScanNetExtracted_Multi
-from .tartanair_raw import TartanAirRaw_Multi, TartanAirV2Raw_Multi
+from .tartanair_raw import TartanAirRaw_Multi, TartanAirV2Raw_Multi, TartanGroundRaw_Multi
 from .scannetpp import ScanNetpp_Multi  # noqa
 from .smartportraits import SmartPortraits_Multi
 from .spring import Spring

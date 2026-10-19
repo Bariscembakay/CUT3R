@@ -34,7 +34,8 @@ class VideoRGBD_Multi(BaseMultiViewDataset):
         cut_off = self.num_views if not self.allow_repeat else max(self.num_views // 3, 3)
         for scene in sorted(os.listdir(self.scene_root)):
             meta = osp.join(self.scene_root, scene, "new_scene_metadata.npz")
-            if not osp.exists(meta):
+            # hold-out lists name the source scene: "scene_<name>[__<camera>]" -> <name>
+            if not osp.exists(meta) or not self.keep_scene(scene.removeprefix("scene_").split("__")[0]):
                 continue
             basenames = list(np.load(meta, allow_pickle=True)["images"])
             if len(basenames) < cut_off:

@@ -31,7 +31,7 @@ class ScanNetExtracted_Multi(BaseMultiViewDataset):
         cut_off = self.num_views if not self.allow_repeat else max(self.num_views // 3, 3)
         for scene in sorted(os.listdir(self.ROOT)):
             d = osp.join(self.ROOT, scene)
-            if not osp.exists(osp.join(d, "poses.txt")):
+            if not osp.exists(osp.join(d, "poses.txt")) or not self.keep_scene(scene):
                 continue
             meta = json.load(open(osp.join(d, "intrinsics.json")))
             poses = np.loadtxt(osp.join(d, "poses.txt")).reshape(-1, 4, 4)

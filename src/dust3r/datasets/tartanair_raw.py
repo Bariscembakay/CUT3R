@@ -40,7 +40,8 @@ class TartanAirRaw_Multi(TartanAir_Multi):
         scenes, sceneids, images, scene_img_list, start_img_ids = [], [], [], [], []
         self.scene_poses = []
         cut_off = self.num_views if not self.allow_repeat else max(self.num_views // 3, 3)
-        for env in sorted(d for d in os.listdir(self.ROOT) if osp.isdir(osp.join(self.ROOT, d))):
+        for env in sorted(d for d in os.listdir(self.ROOT)
+                          if osp.isdir(osp.join(self.ROOT, d)) and self.keep_scene(d)):
             for mode in self.MODES:
                 mode_dir = osp.join(self.ROOT, env, mode)
                 if not osp.isdir(mode_dir):
@@ -123,3 +124,10 @@ class TartanAirV2Raw_Multi(TartanAirRaw_Multi):
         if rgba is None:
             raise IOError(f"Could not load depth {path}")
         return rgba.view("<f4").squeeze(-1).copy()
+
+
+class TartanGroundRaw_Multi(TartanAirV2Raw_Multi):
+    """TartanGround: TartanAir v2's file layout and camera, recorded by ground robots
+    (legged, differential-drive, omnidirectional) at 10 Hz."""
+
+    MODES = ("Data_anymal", "Data_diff", "Data_omni")
