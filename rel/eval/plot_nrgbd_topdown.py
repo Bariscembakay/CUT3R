@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Per-scene top-down NRGBD trajectories: GT, released CUT3R, CUT3R-rel.
+"""Per-scene top-down NRGBD trajectories: GT, released CUT3R, a CUT3R-rel arm (--ours).
 Unaligned, in frame-0 coordinates. The first camera can be tilted indoors, so
 positions are projected onto the plane perpendicular to the mean GT camera
 up-vector -- one fixed projection shared by all three trajectories, not a fit.
@@ -16,8 +16,7 @@ import numpy as np  # noqa: E402
 
 from analyze_chunked import ate, load_run, rpe  # noqa: E402
 
-RUNS = {"CUT3R (released)": ("/group/compact-3dmem/campaigns/frame_anchor/cut3r_pub_palindrome_s1", "#2a78d6"),
-        "CUT3R-rel (ours)": ("/group/compact-3dmem/campaigns/cut3r_rel/pilot_eval/pilot_rel_continuous", "#1baf7a")}
+RELEASED = "/group/compact-3dmem/campaigns/frame_anchor/cut3r_pub_palindrome_s1"
 SCENES = ["breakfast_room", "complete_kitchen", "green_room", "grey_white_room", "kitchen",
           "morning_apartment", "staircase", "thin_geometry", "whiteroom"]
 
@@ -35,7 +34,11 @@ def ground_basis(G):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", required=True)
+    ap.add_argument("--ours", default="/group/compact-3dmem/campaigns/cut3r_rel/pilot_eval/pilot_rel_continuous",
+                    help="CUT3R-rel eval arm dir")
+    ap.add_argument("--label", default="CUT3R-rel (ours)")
     args = ap.parse_args()
+    RUNS = {"CUT3R (released)": (RELEASED, "#2a78d6"), args.label: (args.ours, "#1baf7a")}
     os.makedirs(args.out, exist_ok=True)
     for s in SCENES:
         traj, G = {}, None

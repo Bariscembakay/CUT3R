@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Per-sequence top-down KITTI trajectories: GT, released CUT3R, CUT3R-rel.
+"""Per-sequence top-down KITTI trajectories: GT, released CUT3R, a CUT3R-rel arm (--ours).
 Unaligned, in frame-0 coordinates (every trajectory starts at the origin facing
 +z). KITTI cameras are y-down, so the ground plane is x-z: plotted as x
 (right) vs z (forward). Writes one PNG and one CSV per sequence."""
@@ -16,14 +16,17 @@ import numpy as np  # noqa: E402
 from analyze_chunked import kitti_odometry_error  # noqa: E402
 from analyze_chunked import ate, load_run  # noqa: E402
 
-RUNS = {"CUT3R (released)": ("/group/compact-3dmem/campaigns/frame_anchor/cut3r_pub_palindrome_s1", "#2a78d6"),
-        "CUT3R-rel (ours)": ("/group/compact-3dmem/campaigns/cut3r_rel/pilot_eval/pilot_rel_continuous", "#1baf7a")}
+RELEASED = "/group/compact-3dmem/campaigns/frame_anchor/cut3r_pub_palindrome_s1"
 
 
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", required=True)
+    ap.add_argument("--ours", default="/group/compact-3dmem/campaigns/cut3r_rel/pilot_eval/pilot_rel_continuous",
+                    help="CUT3R-rel eval arm dir")
+    ap.add_argument("--label", default="CUT3R-rel (ours)")
     args = ap.parse_args()
+    RUNS = {"CUT3R (released)": (RELEASED, "#2a78d6"), args.label: (args.ours, "#1baf7a")}
     os.makedirs(args.out, exist_ok=True)
     for s in ["%02d" % i for i in range(11)]:
         traj, G = {}, None
