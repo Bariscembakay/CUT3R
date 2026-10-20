@@ -1,3 +1,4 @@
+import json
 import os.path as osp
 import PIL
 import numpy as np
@@ -9,6 +10,10 @@ from dust3r.datasets.utils.transforms import ImgNorm, SeqColorJitter
 from dust3r.utils.geometry import depthmap_to_absolute_camera_coordinates
 import dust3r.datasets.utils.cropping as cropping
 from dust3r.datasets.utils.corr import extract_correspondences_from_pts3d
+
+
+# frame gaps the overlap tables (rel/prep/compute_overlap.py) are computed for
+OVERLAP_GAPS = (1, 2, 3, 4, 6, 8, 12, 16, 24, 32, 48, 64)
 
 
 def get_ray_map(c2w1, c2w2, intrinsics, h, w):
@@ -55,6 +60,9 @@ class BaseMultiViewDataset(EasyDataset):
         holdout=None,
         holdout_mode="exclude",
         raymap_frame="first",
+        overlap=None,
+        overlap_tau=0.3,
+        overlap_const_frac=0.3,
     ):
         assert num_views is not None, "undefined num_views"
         self.num_views = num_views
@@ -106,6 +114,15 @@ class BaseMultiViewDataset(EasyDataset):
         # update the state -- instead of frame 0.
         assert raymap_frame in ("first", "last_image")
         self.raymap_frame = raymap_frame
+        # Opt-in overlap sampler (rel/prep/compute_overlap.py writes the tables):
+        # each step's target overlap is uniform in [overlap_tau, 1], and the step
+        # takes the largest gap that still overlaps that much, so clips span as many
+        # kinds of inter-frame motion as co-visibility allows, whatever the frame rate
+        # or speed. overlap_const_frac of the clips keep one target throughout.
+        self.overlap = overlap
+        self.overlap_tau = overlap_tau
+        self.overlap_const_frac = overlap_const_frac
+        self._overlap_table = None
 
     def keep_scene(self, name):
         if self.holdout is None:
@@ -207,8 +224,43 @@ class BaseMultiViewDataset(EasyDataset):
             shuffled_list = [item for block in shuffled_blocks for item in block]
             return shuffled_list
 
+    def _scene_overlap(self, id_ref):
+        """This scene's overlap table: [frames, len(OVERLAP_GAPS)], -1 past the end."""
+        if self._overlap_table is None:
+            index = json.load(open(self.overlap + "_index.json"))
+            assert tuple(index["gaps"]) == OVERLAP_GAPS, index["gaps"]
+            self._overlap_table = (np.load(self.overlap + ".npy", mmap_mode="r"), index["scenes"])
+        table, scenes = self._overlap_table
+        off, n = scenes[self.scene_key(self.sceneids[id_ref])]
+        return table[off:off + n]
+
+    def _overlap_seq(self, num_views, pos_ref, table, rng, tries=8):
+        gaps = np.array(OVERLAP_GAPS)
+        const = rng.random() < self.overlap_const_frac
+        u = rng.uniform(self.overlap_tau, 1.0)
+        for _ in range(tries):
+            pos = [pos_ref]
+            while len(pos) < num_views:
+                if not const:
+                    u = rng.uniform(self.overlap_tau, 1.0)
+                ok = gaps[np.asarray(table[pos[-1]], np.float32) >= u]
+                nxt = pos[-1] + (int(ok.max()) if len(ok) else 1)
+                if nxt >= len(table):
+                    break
+                pos.append(nxt)
+            if len(pos) == num_views:
+                return pos
+            pos_ref = int(rng.integers(0, max(1, pos_ref)))  # ran off the end: start earlier
+        return None
+
     def get_seq_from_start_id(self, num_views, id_ref, ids_all, rng, *args, **kwargs):
-        pos, is_video = self._get_seq_from_start_id(num_views, id_ref, ids_all, rng, *args, **kwargs)
+        pos = None
+        if self.overlap is not None:
+            pos = self._overlap_seq(num_views, ids_all.index(id_ref), self._scene_overlap(id_ref), rng)
+        if pos is not None:
+            is_video = True
+        else:
+            pos, is_video = self._get_seq_from_start_id(num_views, id_ref, ids_all, rng, *args, **kwargs)
         # short-circuit first: with static_prob == 0 no random number is drawn,
         # so sampling stays identical to upstream
         if self.static_prob and is_video and len(pos) > 1 and rng.random() < self.static_prob:

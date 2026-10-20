@@ -68,6 +68,25 @@ class TartanAirRaw_Multi(TartanAir_Multi):
         self.scenes, self.sceneids, self.images = scenes, sceneids, images
         self.scene_img_list, self.start_img_ids = scene_img_list, start_img_ids
 
+    def scene_key(self, sid):
+        return osp.relpath(self.scenes[sid], self.ROOT)
+
+    def _read_frame(self, view_idx, rgb=True):
+        """Native-resolution frame: (image or None, depth in m with 0 = invalid and -1 =
+        sky, K, cam-to-world), with the sky and 98th-percentile handling of training."""
+        scene_id = self.sceneids[view_idx]
+        scene_dir = self.scenes[scene_id]
+        basename = self.images[view_idx]
+        image = imread_cv2(osp.join(scene_dir, self.IMG[0], basename + self.IMG[1])) if rgb else None
+        depthmap = self.read_depth(osp.join(scene_dir, self.DEPTH[0], basename + self.DEPTH[1]))
+        camera_pose = self.scene_poses[scene_id][int(basename)]
+        sky_mask = depthmap >= 1000
+        depthmap[sky_mask] = -1.0
+        depthmap = np.nan_to_num(depthmap, nan=0, posinf=0, neginf=0)
+        threshold = np.percentile(depthmap[depthmap > 0], 98) if (depthmap > 0).any() else 0
+        depthmap[depthmap > threshold] = 0.0
+        return image, depthmap, self.K.copy(), camera_pose
+
     def _get_views(self, idx, resolution, rng, num_views):
         start_id = self.start_img_ids[idx]
         all_image_ids = self.scene_img_list[self.sceneids[start_id]]
@@ -77,21 +96,11 @@ class TartanAirRaw_Multi(TartanAir_Multi):
         )
         views = []
         for v, view_idx in enumerate(np.array(all_image_ids)[pos]):
-            scene_id = self.sceneids[view_idx]
-            scene_dir = self.scenes[scene_id]
+            scene_dir = self.scenes[self.sceneids[view_idx]]
             basename = self.images[view_idx]
-            image = imread_cv2(osp.join(scene_dir, self.IMG[0], basename + self.IMG[1]))
-            depthmap = self.read_depth(osp.join(scene_dir, self.DEPTH[0], basename + self.DEPTH[1]))
-            camera_pose = self.scene_poses[scene_id][int(basename)]
-
-            sky_mask = depthmap >= 1000
-            depthmap[sky_mask] = -1.0
-            depthmap = np.nan_to_num(depthmap, nan=0, posinf=0, neginf=0)
-            threshold = np.percentile(depthmap[depthmap > 0], 98) if (depthmap > 0).any() else 0
-            depthmap[depthmap > threshold] = 0.0
-
+            image, depthmap, K, camera_pose = self._read_frame(view_idx)
             image, depthmap, intrinsics = self._crop_resize_if_necessary(
-                image, depthmap, self.K.copy(), resolution, rng, info=(scene_dir, basename)
+                image, depthmap, K, resolution, rng, info=(scene_dir, basename)
             )
             img_mask, ray_mask = self.get_img_and_ray_masks(self.is_metric, v, rng, p=[0.75, 0.2, 0.05])
             views.append(dict(

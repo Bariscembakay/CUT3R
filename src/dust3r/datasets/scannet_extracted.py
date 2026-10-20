@@ -57,6 +57,23 @@ class ScanNetExtracted_Multi(BaseMultiViewDataset):
     def get_image_num(self):
         return len(self.images)
 
+    def scene_key(self, sid):
+        return self.scenes[sid]
+
+    def _read_frame(self, view_idx, rgb=True):
+        """Native-resolution frame: (image or None, depth in m with 0 = invalid, K, cam-to-world)."""
+        sid = self.sceneids[view_idx]
+        d = osp.join(self.ROOT, self.scenes[sid])
+        f = self.images[view_idx]
+        depthmap = imread_cv2(osp.join(d, "depth", f"{f:06d}.png"), cv2.IMREAD_UNCHANGED)
+        depthmap = depthmap.astype(np.float32) / self.scene_shift[sid]
+        depthmap[~np.isfinite(depthmap)] = 0
+        image = None
+        if rgb:
+            image = imread_cv2(osp.join(d, "color", f"{f:06d}.jpg"))
+            image = cv2.resize(image, depthmap.shape[::-1], interpolation=cv2.INTER_LANCZOS4)
+        return image, depthmap, self.scene_K[sid].copy(), self.scene_poses[sid][f]
+
     def _get_views(self, idx, resolution, rng, num_views):
         start_id = self.start_img_ids[idx]
         all_image_ids = self.scene_img_list[self.sceneids[start_id]]
@@ -67,20 +84,15 @@ class ScanNetExtracted_Multi(BaseMultiViewDataset):
         views = []
         for v, view_idx in enumerate(np.array(all_image_ids)[pos]):
             sid = self.sceneids[view_idx]
-            d = osp.join(self.ROOT, self.scenes[sid])
             f = self.images[view_idx]
-            depthmap = imread_cv2(osp.join(d, "depth", f"{f:06d}.png"), cv2.IMREAD_UNCHANGED)
-            depthmap = depthmap.astype(np.float32) / self.scene_shift[sid]
-            depthmap[~np.isfinite(depthmap)] = 0
-            rgb = imread_cv2(osp.join(d, "color", f"{f:06d}.jpg"))
-            rgb = cv2.resize(rgb, depthmap.shape[::-1], interpolation=cv2.INTER_LANCZOS4)
+            rgb, depthmap, K, camera_pose = self._read_frame(view_idx)
             rgb, depthmap, intrinsics = self._crop_resize_if_necessary(
-                rgb, depthmap, self.scene_K[sid].copy(), resolution, rng=rng, info=view_idx
+                rgb, depthmap, K, resolution, rng=rng, info=view_idx
             )
             img_mask, ray_mask = self.get_img_and_ray_masks(self.is_metric, v, rng, p=[0.75, 0.2, 0.05])
             views.append(dict(
                 img=rgb, depthmap=depthmap.astype(np.float32),
-                camera_pose=self.scene_poses[sid][f], camera_intrinsics=intrinsics.astype(np.float32),
+                camera_pose=camera_pose, camera_intrinsics=intrinsics.astype(np.float32),
                 dataset="ScanNet", label=f"{self.scenes[sid]}_{f:06d}", instance=f"{idx}_{view_idx}",
                 is_metric=self.is_metric, is_video=ordered_video,
                 quantile=np.array(0.98, dtype=np.float32), img_mask=img_mask, ray_mask=ray_mask,

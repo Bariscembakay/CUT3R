@@ -56,6 +56,20 @@ class VideoRGBD_Multi(BaseMultiViewDataset):
     def get_image_num(self):
         return len(self.images)
 
+    def scene_key(self, sid):
+        return self.scenes[sid]
+
+    def _read_frame(self, view_idx, rgb=True):
+        """Native-resolution frame: (image or None, depth in m with 0 = invalid, K, cam-to-world)."""
+        d = osp.join(self.scene_root, self.scenes[self.sceneids[view_idx]])
+        basename = self.images[view_idx]
+        depthmap = imread_cv2(osp.join(d, "depth", basename + ".png"), cv2.IMREAD_UNCHANGED)
+        depthmap = depthmap.astype(np.float32) / 1000
+        depthmap[~np.isfinite(depthmap)] = 0
+        cam = np.load(osp.join(d, "cam", basename + ".npz"))
+        image = imread_cv2(osp.join(d, "color", basename + ".jpg")) if rgb else None
+        return image, depthmap, cam["intrinsics"], cam["pose"].astype(np.float32)
+
     def _get_views(self, idx, resolution, rng, num_views):
         start_id = self.start_img_ids[idx]
         all_image_ids = self.scene_img_list[self.sceneids[start_id]]
@@ -66,21 +80,16 @@ class VideoRGBD_Multi(BaseMultiViewDataset):
         views = []
         for v, view_idx in enumerate(np.array(all_image_ids)[pos]):
             scene = self.scenes[self.sceneids[view_idx]]
-            d = osp.join(self.scene_root, scene)
             basename = self.images[view_idx]
-            rgb_image = imread_cv2(osp.join(d, "color", basename + ".jpg"))
-            depthmap = imread_cv2(osp.join(d, "depth", basename + ".png"), cv2.IMREAD_UNCHANGED)
-            depthmap = depthmap.astype(np.float32) / 1000
-            depthmap[~np.isfinite(depthmap)] = 0
-            cam = np.load(osp.join(d, "cam", basename + ".npz"))
+            rgb_image, depthmap, K, camera_pose = self._read_frame(view_idx)
             rgb_image, depthmap, intrinsics = self._crop_resize_if_necessary(
-                rgb_image, depthmap, cam["intrinsics"], resolution, rng=rng, info=view_idx
+                rgb_image, depthmap, K, resolution, rng=rng, info=view_idx
             )
             img_mask, ray_mask = self.get_img_and_ray_masks(self.is_metric, v, rng, p=[0.75, 0.2, 0.05])
             views.append(dict(
                 img=rgb_image,
                 depthmap=depthmap.astype(np.float32),
-                camera_pose=cam["pose"].astype(np.float32),
+                camera_pose=camera_pose,
                 camera_intrinsics=intrinsics.astype(np.float32),
                 dataset=self.name,
                 label=scene + "_" + basename,
