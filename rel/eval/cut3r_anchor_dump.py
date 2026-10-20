@@ -366,6 +366,7 @@ def main():
     ap.add_argument("--start", type=int, default=0, help="first source frame of the segment")
     ap.add_argument("--end", type=int, default=0, help="one past the last source frame; 0 = all")
     ap.add_argument("--max-frames", type=int, default=0, help="truncate the sequence (smoke tests)")
+    ap.add_argument("--stride", type=int, default=1, help="keep every n-th source frame (lower frame rate)")
     ap.add_argument("--dump-stride", type=int, default=8, help="pixel stride of the point dump; 0 disables")
     ap.add_argument("--workers", type=int, default=8)
     ap.add_argument("--ckpt", default=CKPT)
@@ -387,7 +388,7 @@ def main():
 
     frames = {"nrgbd": nrgbd_frames, "kitti": kitti_odo_frames,
               "kitti_depthval": kitti_depthval_frames}[args.benchmark](args.root, args.scene)
-    frames = frames[args.start: args.end or None]
+    frames = frames[args.start: args.end or None: args.stride]
     if args.max_frames:
         frames = frames[: args.max_frames]
     N = len(frames)
@@ -466,7 +467,7 @@ def main():
     if args.dump_stride:
         np.savez(f"{args.out}/points_s{args.dump_stride}.npz", **{k: np.stack(v) for k, v in dump.items()})
     json.dump(dict(benchmark=args.benchmark, scene=args.scene, root=args.root, order=args.order,
-                   n_frames=N, n_positions=len(order), max_frames=args.max_frames,
+                   n_frames=N, n_positions=len(order), max_frames=args.max_frames, stride=args.stride,
                    start=args.start, end=args.end, repeat=args.repeat if args.order == "repeat" else None,
                    chunk=args.chunk if args.order == "chunked" else None,
                    overlap=args.overlap if args.order == "chunked" else None,
