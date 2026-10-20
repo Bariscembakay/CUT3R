@@ -234,24 +234,21 @@ class BaseMultiViewDataset(EasyDataset):
         off, n = scenes[self.scene_key(self.sceneids[id_ref])]
         return table[off:off + n]
 
-    def _overlap_seq(self, num_views, pos_ref, table, rng, tries=8):
+    def _overlap_seq(self, num_views, pos_ref, table, rng):
         gaps = np.array(OVERLAP_GAPS)
         const = rng.random() < self.overlap_const_frac
         u = rng.uniform(self.overlap_tau, 1.0)
-        for _ in range(tries):
-            pos = [pos_ref]
-            while len(pos) < num_views:
-                if not const:
-                    u = rng.uniform(self.overlap_tau, 1.0)
-                ok = gaps[np.asarray(table[pos[-1]], np.float32) >= u]
-                nxt = pos[-1] + (int(ok.max()) if len(ok) else 1)
-                if nxt >= len(table):
-                    break
-                pos.append(nxt)
-            if len(pos) == num_views:
-                return pos
-            pos_ref = int(rng.integers(0, max(1, pos_ref)))  # ran off the end: start earlier
-        return None
+        pos = [pos_ref]
+        while len(pos) < num_views:
+            # cap the step so the remaining views still fit before the scene ends
+            cap = (len(table) - 1 - pos[-1]) // (num_views - len(pos))
+            if cap < 1:
+                return None  # start too close to the end: upstream sampler instead
+            if not const:
+                u = rng.uniform(self.overlap_tau, 1.0)
+            ok = gaps[(np.asarray(table[pos[-1]], np.float32) >= u) & (gaps <= cap)]
+            pos.append(pos[-1] + (int(ok.max()) if len(ok) else 1))
+        return pos
 
     def get_seq_from_start_id(self, num_views, id_ref, ids_all, rng, *args, **kwargs):
         pos = None

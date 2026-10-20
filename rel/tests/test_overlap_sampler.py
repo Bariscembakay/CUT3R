@@ -6,7 +6,8 @@
    every consecutive pair overlaps at least overlap_tau (by the table); gaps cover
    the whole ladder; about overlap_const_frac of the clips keep one target, which
    on a stationary table shows as a single repeated gap.
-3. A scene too short for the drawn gaps falls back to the upstream sampler."""
+3. A scene barely long enough: steps are capped so the clip still fits (gap 1).
+4. A start too close to the end falls back to the upstream sampler."""
 import json
 import os.path as osp
 import sys
@@ -72,9 +73,13 @@ def main():
 
     short_path, _ = table_files(40)
     short = Fake(n=40, overlap=short_path)
+    pos = short._overlap_seq(VIEWS, 0, short._scene_overlap(0), np.random.default_rng(1))
+    assert pos is not None and len(pos) == VIEWS and pos[-1] < 40, pos
+    print(f"3. short scene: steps capped to fit, gaps {sorted(set(np.diff(pos).tolist()))}")
+    assert short._overlap_seq(VIEWS, 20, short._scene_overlap(0), np.random.default_rng(1)) is None
     pos, _ = short.get_seq_from_start_id(VIEWS, 0, short.ids, np.random.default_rng(1), max_interval=12)
     assert len(pos) == VIEWS
-    print("3. short scene: falls back to the upstream sampler")
+    print("4. start too close to the end: None, so the upstream sampler takes over")
     print("all passed")
 
 
