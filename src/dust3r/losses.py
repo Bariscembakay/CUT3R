@@ -1139,8 +1139,6 @@ class Regr3DPoseRel(Regr3DPose):
 
     def get_all_pts3d(self, gts, preds, views_all=None, chunk_start=0, preds_all=None, eps=1e-3, **kw):
         views = views_all if views_all is not None else gts
-        assert all(bool(v["is_metric"].all()) for v in gts), "Regr3DPoseRel: metric datasets only"
-        assert not any(bool(v["camera_only"].any()) for v in gts), "Regr3DPoseRel: no camera-only datasets"
         prev = [self._prev_pose(views, chunk_start + j) for j in range(len(gts))]
         gt_pts_self = [geotrf(inv(gt["camera_pose"]), gt["pts3d"]) for gt in gts]
         gt_pts_cross = [geotrf(inv(p), gt["pts3d"]) for p, gt in zip(prev, gts)]
@@ -1150,30 +1148,66 @@ class Regr3DPoseRel(Regr3DPose):
         conf_self = [torch.log(pred["conf_self"]).detach().clip(eps) for pred in preds]
         conf_cross = [torch.log(pred["conf"]).detach().clip(eps) for pred in preds]
 
-        norm_factor = self.get_norm_factor_point_cloud(
+        # CUT3R's rules, per sample: metric data divides the prediction by the GT's
+        # scale (so metric scale is learned), non-metric data by its own (scale-free);
+        # camera-only data (no depth) takes both scales from camera centres in the
+        # clip's first frame, as CUT3R does. All-metric batches with depth compute
+        # exactly what they did before.
+        metric = gts[0]["is_metric"].bool()
+        camera_only = gts[0]["camera_only"].bool()
+        norm_gt = self.get_norm_factor_point_cloud(
             gt_pts_self, gt_pts_cross, valids, conf_self, conf_cross, norm_self_only=True
-        ).clip(eps)
-        gt_pts_self = [pts / norm_factor for pts in gt_pts_self]
-        gt_pts_cross = [pts / norm_factor for pts in gt_pts_cross]
-        pr_pts_self = [pts / norm_factor for pts in pr_pts_self]
-        pr_pts_cross = [pts / norm_factor for pts in pr_pts_cross]
+        )
+        norm_pr = norm_gt.clone()
+        if (~metric).any():
+            own = self.get_norm_factor_point_cloud(
+                pr_pts_self, pr_pts_cross, valids, conf_self, conf_cross, norm_self_only=True
+            )
+            norm_pr = torch.where(~metric[:, None, None, None], own, norm_pr)
+        if camera_only.any():
+            pose_gt, pose_pr = (x.reshape(-1, 1, 1, 1) for x in
+                                self._camera_norm(views, preds, preds_all, chunk_start, len(gts), ~metric))
+            norm_gt = torch.where(camera_only[:, None, None, None], pose_gt, norm_gt)
+            norm_pr = torch.where(camera_only[:, None, None, None], pose_pr, norm_pr)
+        norm_gt, norm_pr = norm_gt.clip(eps), norm_pr.clip(eps)
+        gt_pts_self = [pts / norm_gt for pts in gt_pts_self]
+        gt_pts_cross = [pts / norm_gt for pts in gt_pts_cross]
+        pr_pts_self = [pts / norm_pr for pts in pr_pts_self]
+        pr_pts_cross = [pts / norm_pr for pts in pr_pts_cross]
 
-        nf = norm_factor.squeeze(2, 3)
+        nf, nf_pr = norm_gt.squeeze(2, 3), norm_pr.squeeze(2, 3)
         gt_poses = [camera_to_pose_encoding(inv(p) @ gt["camera_pose"]) for p, gt in zip(prev, gts)]
         gt_poses = [(g[:, :3] / nf, g[:, 3:]) for g in gt_poses]
-        pr_poses = [(pr["camera_pose"][:, :3] / nf, pr["camera_pose"][:, 3:]) for pr in preds]
-        pose_masks = nf.squeeze(-1) > eps
+        pr_poses = [(pr["camera_pose"][:, :3] / nf_pr, pr["camera_pose"][:, 3:]) for pr in preds]
+        pose_masks = (nf.squeeze(-1) > eps) & (nf_pr.squeeze(-1) > eps)
         # a ray-only view's ray map already holds its pose: no pose loss there
         img = torch.stack([gt["img_mask"].bool() for gt in gts], 1) if "img_mask" in gts[0] else None
         self._view_pose_masks = None if img is None or img.all() else pose_masks[:, None] & img
 
         composed, composed_pts = self._composed_pose_loss(views, gts, preds, preds_all, chunk_start, nf,
-                                                          pose_masks, valids)
+                                                          pose_masks, valids, nf_pr)
         skys = [gt["sky_mask"] & ~valid for gt, valid in zip(gts, valids)]
         return (gt_pts_self, gt_pts_cross, pr_pts_self, pr_pts_cross, gt_poses, pr_poses,
                 valids, skys, pose_masks, {"composed_pose_loss": composed, "composed_pts_loss": composed_pts})
 
-    def _composed_pose_loss(self, views, gts, preds, preds_all, chunk_start, nf, pose_masks, valids):
+    def _camera_norm(self, views, preds, preds_all, chunk_start, n_chunk, not_metric):
+        """CUT3R's camera-only scale: average distance of this chunk's camera centres
+        from the clip's first camera, GT and (for non-metric samples) predicted. The
+        prediction is chained from the relative steps, through each view's reference."""
+        n = chunk_start + n_chunk
+        rows = torch.arange(views[0]["camera_pose"].shape[0], device=views[0]["camera_pose"].device)
+        P = []
+        for m in range(n):
+            src = preds[m - chunk_start] if m >= chunk_start else preds_all[m]
+            step = pose_encoding_to_camera(src["camera_pose"])
+            ref = self._ref_index(views, m)
+            P.append(step if m == 0 else torch.stack(P)[ref, rows] @ step)
+        first = inv(views[0]["camera_pose"])
+        gt_t = [(first @ views[m]["camera_pose"])[:, :3, 3] for m in range(chunk_start, n)]
+        pr_t = [P[m][:, :3, 3] for m in range(chunk_start, n)]
+        return self.get_norm_factor_poses(gt_t, pr_t, not_metric)
+
+    def _composed_pose_loss(self, views, gts, preds, preds_all, chunk_start, nf, pose_masks, valids, nf_pr=None):
         """Chains run back through each view's reference (the previous image view), so
         a query view never enters a chain; with image views only, the k-th link is
         view g - k. A chain ends at a clip start or reset, where a view is its own
@@ -1188,7 +1222,9 @@ class Regr3DPoseRel(Regr3DPose):
         poses = torch.stack([v["camera_pose"] for v in views[:n]])
         rows = torch.arange(refs.shape[1], device=refs.device)
         terms, pts_terms = [], []
-        nf4 = nf[:, :, None, None]
+        nf_pr = nf if nf_pr is None else nf_pr
+        same_scale = torch.equal(nf_pr, nf)  # keep the metric-only arithmetic bit-identical
+        nf4, nf4_pr = nf[:, :, None, None], nf_pr[:, :, None, None]
         for j in range(len(gts)):
             g = chunk_start + j
             C = steps[g]
@@ -1205,10 +1241,11 @@ class Regr3DPoseRel(Regr3DPose):
                     continue
                 C = steps[prev, rows] @ C
                 T = inv(poses[cur, rows]) @ views[g]["camera_pose"]
-                t_err = torch.norm((C[:, :3, 3] - T[:, :3, 3]) / nf, dim=-1)
+                dt = (C[:, :3, 3] - T[:, :3, 3]) / nf if same_scale else C[:, :3, 3] / nf_pr - T[:, :3, 3] / nf
+                t_err = torch.norm(dt, dim=-1)
                 terms.append((t_err + self._rot_err(C[:, :3, :3], T[:, :3, :3]))[ok].mean())
                 if k in self.composed_pts_ks:
-                    pr = geotrf(C, preds[j]["pts3d_in_self_view"]) / nf4
+                    pr = geotrf(C, preds[j]["pts3d_in_self_view"]) / nf4_pr
                     gt = geotrf(inv(poses[cur, rows]), gts[j]["pts3d"]) / nf4
                     m = valids[j] & ok[:, None, None]
                     if m.any():
