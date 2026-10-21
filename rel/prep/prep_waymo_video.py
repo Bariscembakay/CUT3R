@@ -112,9 +112,11 @@ def main():
     ap.add_argument("--splits", nargs="+", default=["training", "validation"])
     ap.add_argument("--max-segments", type=int, default=0)
     ap.add_argument("--workers", type=int, default=32)
+    ap.add_argument("--shard", default="0/1", help="k/n: convert every n-th segment from the k-th (parallel jobs)")
     args = ap.parse_args()
+    k, n = map(int, args.shard.split("/"))
     files = sorted(f for s in args.splits for f in glob.glob(osp.join(args.root, s, "*.tfrecord")))
-    files = files[: args.max_segments or None]
+    files = files[: args.max_segments or None][k::n]
     print(f"{len(files)} segments", flush=True)
     os.makedirs(args.out, exist_ok=True)
     log = {}
@@ -122,7 +124,7 @@ def main():
         for seg, status in pool.imap_unordered(convert, [(f, args.out) for f in files]):
             log[seg] = status
             print(f"{len(log)}/{len(files)} {seg}: {status}", flush=True)
-    json.dump(log, open(osp.join(args.out, "prep_log.json"), "w"), indent=1)
+    json.dump(log, open(osp.join(args.out, f"prep_log_{k}of{n}.json" if n > 1 else "prep_log.json"), "w"), indent=1)
 
 
 if __name__ == "__main__":
