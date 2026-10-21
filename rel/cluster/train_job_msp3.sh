@@ -27,7 +27,7 @@ if [ ! -f "$CKPT" ]; then
     mkdir -p "$(dirname "$CKPT")"
     rsync -a "sof1:$CKPT" "$CKPT"
 fi
-for ds in arkitscenes-cut3r-video-full nuscenes-cut3r-video nuscenes-cut3r-video-6cam scannet-v2-extracted tartanair-v1 tartanair-v2 tartanground; do
+for ds in arkitscenes-cut3r-video-full nuscenes-cut3r-video nuscenes-cut3r-video-6cam scannet-v2-extracted scannetpp-cut3r-video tartanair-v1 tartanair-v2 tartanground; do
     dataset pull "$ds" >/dev/null
 done
 export DATA_ROOT=/data
