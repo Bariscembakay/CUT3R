@@ -19,6 +19,7 @@ import json
 import os
 import os.path as osp
 import shutil
+import zlib
 from multiprocessing import Pool
 
 import cv2
@@ -29,22 +30,50 @@ W_OUT, H_OUT = 512, 384
 DEPTH_W, DEPTH_H = 256, 192
 
 
+def _m_to_mm(m):
+    return np.rint(np.clip(np.nan_to_num(m, nan=0, posinf=0, neginf=0) * 1000, 0, 65535)).astype(np.uint16)
+
+
+def _decode_depth(buf):
+    """One framed depth.bin block -> uint16 mm. Most captures store an LZ4 block of
+    uint16 mm, some (47 of 906) a raw-deflate block of float32 m, as in the ScanNet++
+    toolkit's extract_depth."""
+    try:
+        raw = lz4.block.decompress(buf, uncompressed_size=DEPTH_W * DEPTH_H * 2)
+        return np.frombuffer(raw, np.uint16).reshape(DEPTH_H, DEPTH_W)
+    except lz4.block.LZ4BlockError:
+        m = np.frombuffer(zlib.decompress(buf, wbits=-zlib.MAX_WBITS), np.float32)
+        return _m_to_mm(m).reshape(DEPTH_H, DEPTH_W)
+
+
 def read_depth_frames(path, keep):
-    """depth.bin: per frame a little-endian uint32 size, then an LZ4 block of uint16 mm."""
-    out = {}
+    """depth.bin -> {frame index: uint16 mm}, frame i = i-th pose_intrinsic_imu.json entry.
+    Per frame a little-endian uint32 size and a compressed block, or, when that framing
+    does not tile the file, one raw-deflate stream of float32 m for all frames."""
+    total = osp.getsize(path)
+    blocks, pos = [], 0
     with open(path, "rb") as f:
-        i = 0
-        while True:
-            head = f.read(4)
-            if len(head) < 4:
+        while pos + 4 <= total:
+            f.seek(pos)
+            size = int.from_bytes(f.read(4), "little")
+            if pos + 4 + size > total:
                 break
-            size = int.from_bytes(head, "little")
-            if i in keep:
-                raw = lz4.block.decompress(f.read(size), uncompressed_size=DEPTH_W * DEPTH_H * 2)
-                out[i] = np.frombuffer(raw, np.uint16).reshape(DEPTH_H, DEPTH_W)
+            blocks.append((pos + 4, size))
+            pos += 4 + size
+        if pos != total:
+            f.seek(0)
+            try:
+                m = np.frombuffer(zlib.decompress(f.read(), wbits=-zlib.MAX_WBITS), np.float32)
+            except zlib.error:  # framed after all, with a truncated last frame
+                pass
             else:
-                f.seek(size, 1)
-            i += 1
+                frames = m.reshape(-1, DEPTH_H, DEPTH_W)
+                return {i: _m_to_mm(frames[i]) for i in keep if i < len(frames)}
+        out = {}
+        for i in sorted(keep):
+            if i < len(blocks):
+                f.seek(blocks[i][0])
+                out[i] = _decode_depth(f.read(blocks[i][1]))
     return out
 
 
@@ -103,11 +132,13 @@ def main():
     ap.add_argument("--root", default="/data/ScanNetpp")
     ap.add_argument("--out", required=True)
     ap.add_argument("--splits", nargs="+", default=["nvs_sem_train", "nvs_sem_val"])
+    ap.add_argument("--scenes", nargs="+", help="convert these scenes instead of --splits")
     ap.add_argument("--stride", type=int, default=6)
     ap.add_argument("--max-scenes", type=int, default=0)
     ap.add_argument("--workers", type=int, default=32)
     args = ap.parse_args()
-    scenes = sorted({l.strip() for s in args.splits for l in open(osp.join(args.root, "splits", s + ".txt")) if l.strip()})
+    scenes = sorted(args.scenes or {l.strip() for s in args.splits
+                                    for l in open(osp.join(args.root, "splits", s + ".txt")) if l.strip()})
     scenes = scenes[: args.max_scenes or None]
     print(f"{len(scenes)} scenes", flush=True)
     os.makedirs(args.out, exist_ok=True)
