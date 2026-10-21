@@ -101,6 +101,8 @@ def loss_of_one_batch_tbptt(
     ret=None,
     img_mask=None,
     inference=False,
+    train_chunks=4,
+    random_start=False,
 ):
     if len(batch) > 2:
         assert (
@@ -108,6 +110,17 @@ def loss_of_one_batch_tbptt(
         ), "cannot symmetrize batch with more than 2 views"
     if symmetrize_batch:
         batch = make_batch_symmetric(batch)
+    # Upstream: the last `train_chunks` chunks get gradients; the ones before only
+    # advance the state, so the first frames of a clip are never trained.
+    # random_start: the trained window starts at a random chunk instead, so trained
+    # frames see anything from a fresh state to the whole clip as history; chunks
+    # after the window are skipped. The number of backward passes stays
+    # train_chunks on every rank.
+    n_chunks = (len(batch) - 1) // chunk_size + 1
+    first_trained = max(0, n_chunks - train_chunks)
+    if random_start and first_trained > 0:
+        first_trained = int(torch.randint(0, first_trained + 1, (1,)).item())
+    n_run = min(n_chunks, first_trained + train_chunks)
     all_preds = []
     all_loss = 0.0
     all_loss_details = {}
@@ -126,13 +139,13 @@ def loss_of_one_batch_tbptt(
         init_state_feat = init_state_feat.detach()
         init_mem = init_mem.detach()
 
-        for chunk_id in range((len(batch) - 1) // chunk_size + 1):
+        for chunk_id in range(n_run):
             preds = []
             chunk = []
             state_feat = state_feat.detach()
             state_pos = state_pos.detach()
             mem = mem.detach()
-            if chunk_id < ((len(batch) - 1) // chunk_size + 1) - 4:
+            if chunk_id < first_trained:
                 with torch.no_grad():
                     for in_chunk_idx in range(chunk_size):
                         i = chunk_id * chunk_size + in_chunk_idx
@@ -218,13 +231,14 @@ def loss_of_one_batch_tbptt(
                         parameters=model.parameters(),
                         update_grad=True,
                         clip_grad=1.0,
+                        sync_grads=True,  # the forward above bypassed DDP
                     )
                     optimizer.zero_grad()
                     del loss
     result = dict(
         views=batch,
         pred=all_preds,
-        loss=(all_loss / ((len(batch) - 1) // chunk_size + 1), all_loss_details),
+        loss=(all_loss / n_run, all_loss_details),
         already_backprop=True,
     )
     return result[ret] if ret else result

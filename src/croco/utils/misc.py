@@ -276,6 +276,37 @@ def init_distributed_mode(args):
     setup_for_distributed(args.rank == 0)
 
 
+def average_gradients(parameters, world_size, bucket_numel=2**26):
+    """Mean of every parameter's gradient over the ranks. Needed where the forward
+    pass bypasses DDP (the TBPTT loop calls the unwrapped model), so DDP never arms
+    its all-reduce and each rank would otherwise train its own copy. A parameter
+    keeps grad None only if it has none on any rank, so the optimizer still skips it;
+    one with a gradient elsewhere joins with zeros."""
+    params = [p for p in parameters if p.requires_grad]
+    if not params:
+        return
+    has = torch.tensor([p.grad is not None for p in params], dtype=torch.uint8, device=params[0].device)
+    dist.all_reduce(has, op=dist.ReduceOp.MAX)
+    grads = []
+    for p, h in zip(params, has.tolist()):
+        if h:
+            if p.grad is None:
+                p.grad = torch.zeros_like(p)
+            grads.append(p.grad)
+    bucket, n = [], 0
+    for g in grads + [None]:
+        if g is not None:
+            bucket.append(g)
+            n += g.numel()
+        if bucket and (g is None or n >= bucket_numel):
+            flat = torch._utils._flatten_dense_tensors(bucket)
+            dist.all_reduce(flat)
+            flat /= world_size
+            for dst, src in zip(bucket, torch._utils._unflatten_dense_tensors(flat, bucket)):
+                dst.copy_(src)
+            bucket, n = [], 0
+
+
 class NativeScalerWithGradNormCount:
     state_dict_key = "amp_scaler"
 
@@ -290,10 +321,14 @@ class NativeScalerWithGradNormCount:
         parameters=None,
         create_graph=False,
         update_grad=True,
+        sync_grads=False,
     ):
+        parameters = list(parameters) if parameters is not None else None
         self.accelerator.backward(
             loss, create_graph=create_graph
         )  # .backward(create_graph=create_graph)
+        if sync_grads and self.accelerator.num_processes > 1:
+            average_gradients(parameters, self.accelerator.num_processes)
         if update_grad:
             if clip_grad is not None:
                 assert parameters is not None

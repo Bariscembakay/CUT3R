@@ -10,7 +10,15 @@ defaults:
   - _self_
 
 static_prob: 0.0
-num_test_views: 32
+# 64-view clips, 8-frame truncated-backprop chunks, 4 trained chunks (32 frames)
+# at a random start chunk: trained frames see 0 to 63 frames of history, the
+# first predictions of a stream included, and a write to the state is credited
+# up to 7 frames ahead (upstream: last 16 of the clip, 4-frame chunks).
+num_views: 64
+num_test_views: 64
+tbptt_chunk: 8
+tbptt_train_chunks: 4
+tbptt_random_start: true
 train_kw: video_only=True, no_raymap=True, static_prob=${static_prob}, aug_crop=16, resolution=${pilot_res},
   transform=SeqColorJitter, num_views=${num_views}, n_corres=${n_corres_train}
 dataset1: VideoRGBD_Multi(split='train', ROOT='${data_root}/arkitscenes-cut3r-video-full', name='arkitscenes_video',
