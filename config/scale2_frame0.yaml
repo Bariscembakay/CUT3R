@@ -47,9 +47,13 @@ test_dataset: ${val_clips} @ VideoRGBD_Multi(split='train', ROOT='${data_root}/a
   max_interval=10, holdout='rel/splits/scannetpp_val.txt', resolution=(512, 384), ${val_kw})
 
 eval_freq: 1
-# An upper bound, not a choice: the cosine schedule needs a horizon, and the
-# checkpoint is picked from the validation curves (checkpoint-best = lowest mean
-# validation loss; every keep_freq-th epoch is kept for the rest).
+# Constant learning rate after warmup (warmup-stable-decay), so the run can be
+# extended while the validation curves still improve; once stopped, cool down
+# from the chosen epoch E by resuming with decay_start=E epochs=E+k (cosine to
+# min_lr). checkpoint-best = lowest mean validation loss; every keep_freq-th
+# epoch is kept for the rest.
+lr_schedule: wsd
+decay_start: null
 epochs: 30
 keep_freq: 2
 exp_name: scale2_frame0
