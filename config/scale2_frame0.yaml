@@ -1,9 +1,9 @@
 # Scale-up 2, frame-0 control. scale_frame0's recipe with the data audit's changes:
 # nuScenes from all six cameras (the back camera is the only driving view near
-# KITTI's field of view: focal/width 0.50 vs 0.58), TartanGround and ScanNet++
-# (iPhone video) added; the validation hold-outs in rel/splits are kept out of
-# training and scored every epoch, so the run length is read off the validation
-# curves. The CUT3R-rel arm, scale2_rel.yaml, changes only the criterion.
+# KITTI's field of view: focal/width 0.50 vs 0.58), TartanGround, ScanNet++
+# (iPhone video) and Waymo (5 cameras) added; the validation hold-outs in
+# rel/splits are kept out of training and scored every epoch, so the run length
+# is read off the validation curves. The CUT3R-rel arm, scale2_rel.yaml, changes only the criterion.
 # Ray-map queries stay off.
 defaults:
   - pilot_frame0
@@ -32,8 +32,10 @@ dataset5: VideoRGBD_Multi(split='train', ROOT='${data_root}/nuscenes-cut3r-video
 dataset6: TartanGroundRaw_Multi(ROOT='${data_root}/tartanground', holdout='rel/splits/tartanair_val_envs.txt', ${train_kw})
 dataset7: VideoRGBD_Multi(split='train', ROOT='${data_root}/scannetpp-cut3r-video', name='scannetpp_video',
   max_interval=10, holdout='rel/splits/scannetpp_val.txt', ${train_kw})
+dataset8: VideoRGBD_Multi(split='train', ROOT='${data_root}/waymo-cut3r-video', name='waymo_video',
+  max_interval=10, holdout='rel/splits/waymo_val.txt', ${train_kw})
 train_dataset: 2000 @ ${dataset1} + 2000 @ ${dataset2} + 2000 @ ${dataset3} + 2000 @ ${dataset4} + 2000 @ ${dataset5}
-  + 2000 @ ${dataset6} + 2000 @ ${dataset7}
+  + 2000 @ ${dataset6} + 2000 @ ${dataset7} + 2000 @ ${dataset8}
 
 # One validation set per dataset, the held-out scenes only, fixed clips.
 val_clips: 64
@@ -53,6 +55,8 @@ test_dataset: ${val_clips} @ VideoRGBD_Multi(split='train', ROOT='${data_root}/a
   resolution=(512, 384), ${val_kw})
   + ${val_clips} @ VideoRGBD_Multi(split='train', ROOT='${data_root}/scannetpp-cut3r-video', name='scannetpp_val',
   max_interval=10, holdout='rel/splits/scannetpp_val.txt', resolution=(512, 384), ${val_kw})
+  + ${val_clips} @ VideoRGBD_Multi(split='train', ROOT='${data_root}/waymo-cut3r-video', name='waymo_val',
+  max_interval=10, holdout='rel/splits/waymo_val.txt', resolution=(512, 336), ${val_kw})
 
 eval_freq: 1
 # Constant learning rate after warmup (warmup-stable-decay), so the run can be

@@ -1,22 +1,17 @@
 #!/usr/bin/env bash
-# CPU-only: copy the pilot datasets onto this node's /scratch, so training does
-# not read /data live (from gcp-eu1 that is sof1's CephFS, cross-site, ~60 MB/s
-# for a single stream). Parallel rsync per sequence directory. Idempotent.
-# Usage: sbatch --nodelist=<node> [...] stage_data_job.sh [dest]
+# Copy registry datasets into this node's /scratch/$USER/data, so a training job
+# on a GCP node reads local disk instead of /data, which these nodes read across
+# sites (slow enough to stall the loader into the idle-GPU reaper). CPU-only;
+# resumable (rsync); a dataset is complete once <name>/.staged exists.
+# Usage: sbatch --nodelist=<node> [...] stage_data_job.sh <dataset> [<dataset> ...]
 set -euo pipefail
-DEST="${1:-/scratch/$USER/data}"
-mkdir -p "$DEST"
-for ds in arkitscenes-cut3r-video tartanair-v1; do
+DATA=/scratch/$USER/data
+mkdir -p "$DATA"
+for ds in "$@"; do
+    [ -f "$DATA/$ds/.staged" ] && { echo "$ds: already staged"; continue; }
     dataset pull "$ds" >/dev/null
+    t0=$(date +%s)
+    rsync -a --whole-file "/data/$ds/" "$DATA/$ds/"
+    touch "$DATA/$ds/.staged"
+    echo "$(date) $ds: $(du -sh "$DATA/$ds" | cut -f1) in $(( ($(date +%s) - t0) / 60 )) min"
 done
-copy() {  # <src_root> <dest_root> <depth of the parallel unit>
-    local src="$1" dst="$2" depth="$3"
-    (cd "$src" && find . -mindepth "$depth" -maxdepth "$depth" -type d) |
-        xargs -P "${SLURM_CPUS_PER_TASK:-16}" -I{} bash -c \
-            'mkdir -p "'"$dst"'/{}" && rsync -a "'"$src"'/{}/" "'"$dst"'/{}/"'
-    rsync -a --exclude='*/' "$src/" "$dst/"   # top-level files
-}
-time copy /data/arkitscenes-cut3r-video "$DEST/arkitscenes-cut3r-video" 2
-time copy /data/tartanair-v1 "$DEST/tartanair-v1" 3
-du -sh "$DEST"/*
-touch "$DEST/.staged_ok"
