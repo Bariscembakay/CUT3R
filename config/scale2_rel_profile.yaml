@@ -1,0 +1,15 @@
+# Throughput / memory profile of scale2_rel on a new node type: the region-local
+# datasets only, ~12 steps, no validation, no wandb. Not a training run.
+defaults:
+  - scale2_rel
+  - _self_
+
+train_dataset: 100 @ ${dataset1} + 100 @ ${dataset5} + 100 @ ${dataset6} + 100 @ ${dataset7}
+test_dataset: 2 @ VideoRGBD_Multi(split='train', ROOT='${data_root}/nuscenes-cut3r-video-6cam', name='nuscenes_6cam_val',
+  max_interval=12, holdout='rel/splits/nuscenes_val.txt', resolution=(512, 288), ${val_kw})
+epochs: 1
+eval_freq: 0
+keep_freq: 0
+save_freq: 0
+print_freq: 1
+exp_name: scale2_rel_profile
