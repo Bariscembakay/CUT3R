@@ -312,6 +312,7 @@ class NativeScalerWithGradNormCount:
 
     def __init__(self, enabled=True, accelerator: Accelerator = None):
         self.accelerator = accelerator
+        self.skipped = 0
 
     def __call__(
         self,
@@ -338,6 +339,13 @@ class NativeScalerWithGradNormCount:
                 if self.accelerator.scaler is not None:
                     self.accelerator.unscale_gradients()
                 norm = get_grad_norm_(parameters)
+            if not torch.isfinite(torch.as_tensor(norm)):
+                # one non-finite batch would otherwise write NaN into the weights; the gradients
+                # are synced, so every rank sees this norm and skips the step together
+                self.skipped += 1
+                optimizer.zero_grad(set_to_none=True)
+                print(f"[NativeScaler] non-finite gradient norm {norm}: step skipped ({self.skipped} so far)")
+                return norm
             optimizer.step()
         else:
             norm = None

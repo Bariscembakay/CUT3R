@@ -476,11 +476,12 @@ def train_one_epoch(
 
             loss_value = float(loss)
 
-            if not math.isfinite(loss_value):
-                print(
-                    f"Loss is {loss_value}, stopping training, loss details: {loss_details}"
-                )
-                sys.exit(1)
+            finite = math.isfinite(loss_value)
+            if not finite:
+                # NativeScaler skipped the update; exiting here (upstream) would leave the other
+                # ranks waiting in the next collective
+                print(f"Loss is {loss_value} at epoch {epoch} step {data_iter_step}, skipped: "
+                      f"{batch[0].get('dataset')} {batch[0].get('label')}")
             if not result.get("already_backprop", False):
                 loss_scaler(
                     loss,
@@ -508,7 +509,8 @@ def train_one_epoch(
             metric_logger.update(lr=lr)
             metric_logger.update(step=step)
 
-            metric_logger.update(loss=loss_value, **loss_details)
+            if finite:
+                metric_logger.update(loss=loss_value, **loss_details)
 
             if (data_iter_step + 1) % accum_iter == 0 and (
                 (data_iter_step + 1) % (accum_iter * args.print_freq)
