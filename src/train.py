@@ -35,7 +35,7 @@ from dust3r.datasets import get_data_loader
 from dust3r.losses import *  # noqa: F401, needed when loading the model
 from dust3r.inference import loss_of_one_batch, loss_of_one_batch_tbptt  # noqa
 from dust3r.viz import colorize
-from dust3r.utils.render import get_render_results
+from dust3r.utils.render import get_render_results, rasterization
 import dust3r.utils.path_to_croco  # noqa: F401
 import croco.utils.misc as misc  # noqa
 from croco.utils.misc import NativeScalerWithGradNormCount as NativeScaler  # noqa
@@ -652,28 +652,29 @@ def test_one_epoch(
                 continue
             log_writer.add_scalar(prefix + "_" + name, val, 1000 * epoch)
 
-        depths_self, gt_depths_self = get_render_results(
-            batch, result["pred"], self_view=True
-        )
-        depths_cross, gt_depths_cross = get_render_results(
-            batch, result["pred"], self_view=False
-        )
-        for k in range(len(batch)):
-            loss_details[f"self_pred_depth_{k+1}"] = depths_self[k].detach().cpu()
-            loss_details[f"self_gt_depth_{k+1}"] = gt_depths_self[k].detach().cpu()
-            loss_details[f"pred_depth_{k+1}"] = depths_cross[k].detach().cpu()
-            loss_details[f"gt_depth_{k+1}"] = gt_depths_cross[k].detach().cpu()
-
-        imgs_stacked_dict = get_vis_imgs_new(
-            loss_details,
-            args.num_imgs_vis,
-            args.num_test_views,
-            is_metric=batch[0]["is_metric"],
-        )
-        for name, imgs_stacked in imgs_stacked_dict.items():
-            log_writer.add_images(
-                prefix + "/" + name, imgs_stacked, 1000 * epoch, dataformats="HWC"
+        if rasterization is not None:  # depth renders need gsplat
+            depths_self, gt_depths_self = get_render_results(
+                batch, result["pred"], self_view=True
             )
+            depths_cross, gt_depths_cross = get_render_results(
+                batch, result["pred"], self_view=False
+            )
+            for k in range(len(batch)):
+                loss_details[f"self_pred_depth_{k+1}"] = depths_self[k].detach().cpu()
+                loss_details[f"self_gt_depth_{k+1}"] = gt_depths_self[k].detach().cpu()
+                loss_details[f"pred_depth_{k+1}"] = depths_cross[k].detach().cpu()
+                loss_details[f"gt_depth_{k+1}"] = gt_depths_cross[k].detach().cpu()
+
+            imgs_stacked_dict = get_vis_imgs_new(
+                loss_details,
+                args.num_imgs_vis,
+                args.num_test_views,
+                is_metric=batch[0]["is_metric"],
+            )
+            for name, imgs_stacked in imgs_stacked_dict.items():
+                log_writer.add_images(
+                    prefix + "/" + name, imgs_stacked, 1000 * epoch, dataformats="HWC"
+                )
 
     del loss_details, loss_value, batch
     torch.cuda.empty_cache()
