@@ -58,6 +58,9 @@ test_dataset: ${val_clips} @ VideoRGBD_Multi(split='train', ROOT='${data_root}/a
   + ${val_clips} @ VideoRGBD_Multi(split='train', ROOT='${data_root}/waymo-cut3r-video', name='waymo_val',
   max_interval=10, holdout='rel/splits/waymo_val.txt', resolution=(512, 336), ${val_kw})
 
+# a batch of 8 64-view clips is 5.4 GB in /dev/shm; with 2 prefetched per worker,
+# 12 workers on 8 ranks (~1 TB) stalled the node; 4 still outpace a 66 s step
+num_workers: 4
 eval_freq: 1
 # Constant learning rate after warmup (warmup-stable-decay), so the run can be
 # extended while the validation curves still improve; once stopped, cool down

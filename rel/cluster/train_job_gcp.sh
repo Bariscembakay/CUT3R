@@ -25,6 +25,12 @@ export DATA_ROOT="$DATA"
 # batch 8 of 64 views peaks at 79 of 80 GB reserved; this keeps fragmentation from adding to it
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
+# train.py shares DataLoader batches through /dev/shm files (file_system strategy);
+# workers killed with a job leave theirs behind (429 GB after a few killed runs)
+for pid in $(find /dev/shm -maxdepth 1 -user "$USER" -name 'torch_*' -printf '%f\n' | cut -d_ -f2 | sort -u); do
+    kill -0 "$pid" 2>/dev/null || find /dev/shm -maxdepth 1 -user "$USER" -name "torch_${pid}_*" -delete
+done
+
 RUN_DIR="/scratch/$USER/cut3r_rel_runs/$CFG"
 mkdir -p "$RUN_DIR" "$DEST/_joblogs"
 if [ ! -f "$RUN_DIR/checkpoint-last.pth" ] && [ -f "$DEST/checkpoint-last.pth" ]; then

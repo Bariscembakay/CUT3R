@@ -13,7 +13,7 @@ import re
 import sys
 import time
 import math
-from collections import defaultdict
+from collections import defaultdict, deque
 from pathlib import Path
 from typing import Sized
 
@@ -52,6 +52,7 @@ import shutil
 from accelerate import Accelerator
 from accelerate import DistributedDataParallelKwargs, InitProcessGroupKwargs
 from accelerate.logging import get_logger
+from accelerate.utils import gather_object
 from datetime import timedelta
 import torch.multiprocessing
 
@@ -176,6 +177,9 @@ def train(args):
         for dataset in args.test_dataset.split("+")
     }
     assert len(data_loader_test) == len(args.test_dataset.split("+")), "test dataset names collide"
+    # each rank scores its own share of the clips (unprepared, every rank scored all
+    # of them); test_one_epoch pools the values
+    data_loader_test = {k: accelerator.prepare(v) for k, v in data_loader_test.items()}
 
     # model
     printer.info("Loading model: %s", args.model)
@@ -621,6 +625,14 @@ def test_one_epoch(
 
         loss_value, loss_details = result["loss"]  # criterion returns two values
         metric_logger.update(loss=float(loss_value), **loss_details)
+
+    if accelerator.num_processes > 1:
+        per_rank = gather_object([{k: list(m.deque) for k, m in metric_logger.meters.items()}])
+        for k in set().union(*per_rank):
+            vals = [v for d in per_rank for v in d.get(k, [])]
+            m = metric_logger.meters[k]
+            m.deque = deque(vals, maxlen=m.deque.maxlen)
+            m.total, m.count = float(sum(vals)), len(vals)
 
     printer.info("Averaged stats: %s", metric_logger)
 
