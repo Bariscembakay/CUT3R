@@ -1,14 +1,21 @@
 # Throughput / memory profile of scale2_rel on a new node type: the first staged
-# datasets only, ~12 steps, no validation, no wandb. Not a training run.
+# datasets only, 6 steps, then the staged validation sets; no wandb. Not a training run.
 defaults:
   - scale2_rel
   - _self_
 
 train_dataset: 100 @ ${dataset1} + 100 @ ${dataset5} + 100 @ ${dataset7} + 100 @ ${dataset8}
-test_dataset: 2 @ VideoRGBD_Multi(split='train', ROOT='${data_root}/nuscenes-cut3r-video-6cam', name='nuscenes_6cam_val',
+# the staged validation sets at full size: validation memory and time
+test_dataset: ${val_clips} @ VideoRGBD_Multi(split='train', ROOT='${data_root}/arkitscenes-cut3r-video-full',
+  name='arkitscenes_val', max_interval=4, holdout='rel/splits/arkitscenes_val.txt', resolution=(512, 384), ${val_kw})
+  + ${val_clips} @ VideoRGBD_Multi(split='train', ROOT='${data_root}/nuscenes-cut3r-video-6cam', name='nuscenes_6cam_val',
   max_interval=12, holdout='rel/splits/nuscenes_val.txt', resolution=(512, 288), ${val_kw})
+  + ${val_clips} @ VideoRGBD_Multi(split='train', ROOT='${data_root}/scannetpp-cut3r-video', name='scannetpp_val',
+  max_interval=10, holdout='rel/splits/scannetpp_val.txt', resolution=(512, 384), ${val_kw})
+  + ${val_clips} @ VideoRGBD_Multi(split='train', ROOT='${data_root}/waymo-cut3r-video', name='waymo_val',
+  max_interval=10, holdout='rel/splits/waymo_val.txt', resolution=(512, 336), ${val_kw})
 epochs: 1
-eval_freq: 0
+eval_freq: 1
 keep_freq: 0
 save_freq: 1000  # 0 divides by zero in the per-step save check
 print_freq: 1

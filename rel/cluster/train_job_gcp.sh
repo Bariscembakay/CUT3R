@@ -22,6 +22,8 @@ fi
 source "$REPO/rel/cluster/setup_env.sh"
 ENV="${MAMBA_ROOT_PREFIX:-/scratch/$USER/micromamba}/envs/cut3r"
 export DATA_ROOT="$DATA"
+# batch 8 of 64 views peaks at 79 of 80 GB reserved; this keeps fragmentation from adding to it
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
 RUN_DIR="/scratch/$USER/cut3r_rel_runs/$CFG"
 mkdir -p "$RUN_DIR" "$DEST/_joblogs"
@@ -34,7 +36,10 @@ ship() {
     rsync -a "$RUN_DIR/" "$DEST/" && cp "$LOG" "$DEST/_joblogs/" || true
     echo "[train_job_gcp] shipped $RUN_DIR -> $DEST"
 }
-trap ship EXIT
+# GCP nodes are deleted when their lease ends, /scratch with them: ship every 2 h too
+( while sleep 7200; do ship; done ) &
+SHIPPER=$!
+trap 'kill $SHIPPER 2>/dev/null; ship' EXIT
 trap 'exit 143' TERM   # bash skips the EXIT trap on an untrapped SIGTERM
 trap ship USR1         # --signal=B:USR1@1200: copy out before the walltime kill
 
