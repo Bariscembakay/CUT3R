@@ -10,6 +10,6 @@ test_dataset: 2 @ VideoRGBD_Multi(split='train', ROOT='${data_root}/nuscenes-cut
 epochs: 1
 eval_freq: 0
 keep_freq: 0
-save_freq: 0
+save_freq: 1000  # 0 divides by zero in the per-step save check
 print_freq: 1
 exp_name: scale2_rel_profile
