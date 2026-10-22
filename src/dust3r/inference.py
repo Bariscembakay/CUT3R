@@ -119,7 +119,13 @@ def loss_of_one_batch_tbptt(
     n_chunks = (len(batch) - 1) // chunk_size + 1
     first_trained = max(0, n_chunks - train_chunks)
     if random_start and first_trained > 0:
-        first_trained = int(torch.randint(0, first_trained + 1, (1,)).item())
+        start = torch.randint(0, first_trained + 1, (1,), device=accelerator.device)
+        # One window for all ranks: per-rank windows give ranks different loss-detail
+        # keys (keyed by view index), which deadlocks the epoch-end metric sync, and
+        # every step would wait for the rank that runs the most chunks.
+        if accelerator.num_processes > 1:
+            torch.distributed.broadcast(start, src=0)
+        first_trained = int(start.item())
     n_run = min(n_chunks, first_trained + train_chunks)
     all_preds = []
     all_loss = 0.0
@@ -132,7 +138,7 @@ def loss_of_one_batch_tbptt(
                 state_feat,
                 state_pos,
                 mem,
-            ) = accelerator.unwrap_model(model)._forward_encoder(batch)
+            ) = accelerator.unwrap_model(model)._forward_encoder(batch[: n_run * chunk_size])
         feat = [f.detach() for f in feat]
         pos = [p.detach() for p in pos]
         shape = [s.detach() for s in shape]
