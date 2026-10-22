@@ -6,6 +6,9 @@
 # Usage: sbatch --constraint=zone-gcp-eu9 --nodelist=<node> --gres=gpu:h100:N --signal=B:USR1@1200 [...] train_job_gcp.sh <config_name> [hydra overrides...]
 # Resubmitting the same config on the same node resumes from the last shipped epoch.
 set -euo pipefail
+# Since the 2026-10-22 cluster update, batch steps get CUDA_VISIBLE_DEVICES="" (srun steps get the
+# GPU UUIDs): CUDA then sees no GPU. The device cgroup already limits the job to its own GPUs.
+[ -n "${CUDA_VISIBLE_DEVICES+x}" ] && [ -z "$CUDA_VISIBLE_DEVICES" ] && unset CUDA_VISIBLE_DEVICES
 CFG="$1"; shift
 REPO="${REPO:-$HOME/CUT3R}"
 DATASETS="arkitscenes-cut3r-video-full tartanair-v1 tartanair-v2 scannet-v2-extracted nuscenes-cut3r-video-6cam tartanground scannetpp-cut3r-video waymo-cut3r-video"
