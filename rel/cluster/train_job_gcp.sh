@@ -12,12 +12,18 @@ set -euo pipefail
 CFG="$1"; shift
 REPO="${REPO:-$HOME/CUT3R}"
 DATASETS="arkitscenes-cut3r-video-full tartanair-v1 tartanair-v2 scannet-v2-extracted nuscenes-cut3r-video-6cam tartanground scannetpp-cut3r-video waymo-cut3r-video"
-DATA=/scratch/$USER/data
 DEST="/group/compact-3dmem/campaigns/cut3r_rel/scale2/$CFG"
-
-for ds in $DATASETS; do
-    [ -f "$DATA/$ds/.staged" ] || { echo "[train_job_gcp] $ds not staged on $(hostname)"; exit 3; }
-done
+# DATA_FROM=registry (sof1 nodes): read /data directly, which is local storage there; GCP nodes
+# read it across sites, so they train from a /scratch copy (stage_data_job.sh)
+if [ "${DATA_FROM:-scratch}" = registry ]; then
+    DATA=/data
+    for ds in $DATASETS; do dataset pull "$ds" >/dev/null; done
+else
+    DATA=/scratch/$USER/data
+    for ds in $DATASETS; do
+        [ -f "$DATA/$ds/.staged" ] || { echo "[train_job_gcp] $ds not staged on $(hostname)"; exit 3; }
+    done
+fi
 if [ -n "$(git -C "$REPO" status --porcelain -- src config rel/cluster)" ]; then
     echo "[train_job_gcp] uncommitted changes in src/config: the logged commit would not be the code that ran"
     exit 3
