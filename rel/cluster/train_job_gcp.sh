@@ -53,6 +53,8 @@ trap 'exit 143' TERM   # bash skips the EXIT trap on an untrapped SIGTERM
 trap ship USR1         # --signal=B:USR1@1200: copy out before the walltime kill
 
 NGPU="${SLURM_GPUS_ON_NODE:-$(nvidia-smi -L | wc -l)}"
+"$ENV/bin/python" -c "import sys, torch; sys.exit(torch.cuda.device_count() < int(sys.argv[1]))" "$NGPU" || {
+    echo "[train_job_gcp] torch sees fewer than $NGPU GPUs (CUDA_VISIBLE_DEVICES=[${CUDA_VISIBLE_DEVICES-unset}])"; exit 4; }
 echo "[train_job_gcp] $(hostname) ${NGPU}x $(nvidia-smi --query-gpu=name --format=csv,noheader | head -1)"
 echo "[train_job_gcp] git $(git -C "$REPO" rev-parse HEAD) config=$CFG overrides=$*"
 cd "$REPO/src"
